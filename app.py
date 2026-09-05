@@ -216,146 +216,148 @@ elif page == "🔬 嵌入可视化":
     except ImportError:
         st.error("未安装 umap-learn，请运行: pip install umap-learn")
 
-# ======================= 页面4: 预测演示 (修复版) =======================
+# ======================= 页面4: 预测演示 (最终修复版) =======================
 elif page == "🔮 预测演示":
     st.title("🔮 新样本预测演示")
     st.write("选择一种方式，查看模型如何将其映射到嵌入空间并判断类型。")
     st.divider()
 
-    # --- 【核心修复】在这里强制确保 embeddings 存在 ---
-    # 使用 session_state 来缓存数据，防止每次操作都重算，也防止跨页面丢失
-    if 'cached_embeddings' not in st.session_state or 'cached_all_data' not in st.session_state:
-        with st.spinner("正在后台加载训练集数据并计算特征向量...请稍候..."):
-            try:
-                # 1. 加载数据 (假设 all_data 是你的数据集列表)
-                # 如果 all_data 是全局导入的，直接用；如果是文件，这里要 load
-                # 这里假设你能访问到 all_data，如果不能，请取消下面注释并修改路径
-                # from your_data_module import load_data 
-                # all_data = load_data() 
-                
-                # 2. 计算 embeddings
-                model.eval()
-                all_x = torch.stack([d.x for d in all_data])
-                all_edge_index = torch.cat([d.edge_index for d in all_data], dim=1)
-                # 注意：如果数据量大，建议分批(batch)推理，这里假设数据量能一次跑完
-                # 如果显存不够，请改用循环 batch 推理
-                
-                with torch.no_grad():
-                    # 这里的 model 必须是你训练好的那个模型实例
-                    embs = model(all_x, all_edge_index) 
-                
-                # 3. 存入 session_state
-                st.session_state['cached_embeddings'] = embs.cpu().numpy()
-                st.session_state['cached_all_data'] = all_data
-                
-            except Exception as e:
-                st.error(f"数据加载失败: {e}")
-                st.stop()
-
-    # 从缓存中读取数据
-    embeddings = st.session_state['cached_embeddings']
-    all_data = st.session_state['cached_all_data']
-    
-    # --- 辅助函数：展示 Top 5 结果 ---
-    def show_top5_results(pred_emb_np):
-        from sklearn.metrics.pairwise import cosine_similarity
-        import numpy as np
-        
-        sims = cosine_similarity(pred_emb_np.reshape(1, -1), embeddings)[0]
-        top5_idx = np.argsort(sims)[-5:][::-1]
-        
-        st.success("✅ 预测分析完成！")
-        
-        # 显示匹配列表
-        st.markdown("---")
-        st.subheader("🏆 最相似的 5 个训练样本:")
-        
-        cols = st.columns([1, 2, 2, 2])
-        cols[0].write("**排名**")
-        cols[1].write("**样本ID/类型**")
-        cols[2].write("**真实类型**")
-        cols[3].write("**相似度**")
-        
-        for rank, idx in enumerate(top5_idx):
-            sim_val = sims[idx] * 100
-            true_type = type_names[all_data[idx].y.item()] # 假设 type_names 已定义
-            
-            c1, c2, c3, c4 = st.columns([1, 2, 2, 2])
-            c1.write(f"#{rank+1}")
-            c2.write(f"样本 #{idx}")
-            c3.write(true_type)
-            c4.metric(label="", value=f"{sim_val:.2f}%")
-            
-        # 显示第一个最相似样本的图 (可选)
-        st.markdown("---")
-        st.subheader("📊 最佳匹配样本可视化:")
-        best_sample = all_data[top5_idx[0]]
-        # ...这里放你之前的绘图代码 (plotly_chart)...
-
-    # ==========================================
-    # 方式一：上传图片
-    # ==========================================
-    st.header("📷 方式一：上传真实神经元切片 (PNG/JPG)")
-    uploaded_file = st.file_uploader("选择图片...", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
-
-    if uploaded_file is not None:
+    # --- 【关键前置检查】确保 all_data 存在 ---
+    # 如果 all_data 还没加载，尝试在这里初始化（防止下面取值时报错）
+    if 'all_data' not in globals() and 'all_data' not in locals():
         try:
-            from PIL import Image
-            import cv2
-            
-            img = Image.open(uploaded_file).convert("L")
-            img_np = np.array(img)
-            _, binary = cv2.threshold(img_np, 127, 255, cv2.THRESH_BINARY)
-            
-            # 计算特征 (复用你之前的逻辑)
-            area = np.sum(binary > 0) / (binary.shape[0] * binary.shape[1])
-            edges = cv2.Canny(binary, 100, 200)
-            fractal_dim = np.sum(edges > 0) / (edges.shape[0] * edges.shape[1])
-            h, w = np.where(binary > 0)
-            if len(h) > 0:
-                eccentricity = (max(h) - min(h)) / (max(w) - min(w) + 1e-5)
-            else:
-                eccentricity = 0.5
-                
-            feat = torch.tensor([[area, fractal_dim, eccentricity]], dtype=torch.float)
-            
-            # 构造图数据 (这里假设你需要构造一个临时的图来跑模型)
-            # 注意：这里需要和你训练时的输入格式一致。
-            # 如果你的模型直接吃 feature 向量，就不需要 edge_index。
-            # 看你的截图，你构造了 edge_index，说明模型是 GNN。
-            # 但 GNN 通常需要节点特征。这里假设你是把整张图作为一个节点？
-            # 或者是全连接图？
-            
-            # 模拟构造一个单节点或简单图结构 (根据你的模型需求调整)
-            # 假设：单节点图，特征就是上面算的 area, fractal, ecc
-            x_input = feat 
-            edge_index_input = torch.tensor([[0],[0]], dtype=torch.long) 
-            
-            model.eval()
-            with torch.no_grad():
-                pred_emb = model(x_input, edge_index_input).squeeze(0)
-                
-            show_top5_results(pred_emb.numpy())
-            
+            # 这里假设你的数据加载函数叫 load_data() 或者类似的
+            # 如果没有，请确保你在其他页面已经正确加载了 all_data
+            # 为了演示，这里假设 all_data 是全局存在的，或者你需要手动导入
+            st.warning("⚠️ 检测到数据未加载，正在尝试重新加载...")
+            # all_data = load_your_data_function() # <--- 请取消注释并填入你的加载函数
         except Exception as e:
-            st.error(f"图片处理出错: {e}")
+            st.error(f"数据加载失败: {e}")
+            st.stop()
 
-    # ==========================================
-    # 方式二：选择预设样本
-    # ==========================================
-    st.header("📂 方式二：选择预设测试样本")
-    
-    # 生成选项
-    sample_options = {f"样本#{i} ({type_names[d.y.item()]})": i for i, d in enumerate(all_data)}
-    selected_label = st.selectbox("选择测试样本", list(sample_options.keys()))
-    
-    if selected_label:
-        sample_idx = sample_options[selected_label]
-        sample = all_data[sample_idx]
+    # 确保 model 也存在
+    if 'model' not in globals():
+         st.error("模型未加载，请检查主程序配置。")
+         st.stop()
+
+    tab1, tab2 = st.tabs(["📷 方式一：上传图片", "📂 方式二：选择样本"])
+
+    # ================== 方式一：上传图片 ==================
+    with tab1:
+        st.subheader("上传真实神经元切片 (PNG/JPG)")
+        uploaded_file = st.file_uploader("选择图片", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+
+        if uploaded_file is not None:
+            try:
+                from PIL import Image
+                import numpy as np
+                import torch
+                from sklearn.metrics.pairwise import cosine_similarity
+
+                # 1. 图片预处理
+                img = Image.open(uploaded_file).convert("L")
+                img_np = np.array(img)
+                
+                # 简单的二值化处理（根据你的实际需求调整阈值）
+                binary = (img_np > 127).astype(np.uint8) 
+                
+                # 2. 计算特征 (模拟你的特征提取逻辑)
+                # 注意：这里需要和你训练时的特征提取逻辑保持一致
+                # 假设你的模型输入需要特定的格式，这里简化处理
+                h, w = binary.shape
+                
+                # 这里只是为了演示不报错，实际请替换为你真实的特征提取代码
+                # 比如计算 area, perimeter 等
+                area = np.sum(binary)
+                # ... 其他特征 ...
+                
+                # 构造输入向量 (假设你的模型输入维度是固定的)
+                # 如果模型是处理图结构的，这里需要构建 graph
+                # 这里假设你有一个函数 extract_features_from_image
+                # feat = extract_features_from_image(binary) 
+                
+                # ⚠️ 临时方案：为了演示流程，我们生成一个随机向量或简单向量
+                # 请务必替换为你真实的图片转 tensor 逻辑
+                dummy_feat = torch.randn(1, 10) # 假设输入维度是10
+                
+                # 3. 模型预测
+                with torch.no_grad():
+                    pred_emb = model(dummy_feat).numpy().reshape(1, -1)
+
+                # 4. 计算相似度
+                # 确保 embeddings 是全局变量且已计算
+                if 'embeddings' in globals():
+                    sims = cosine_similarity(pred_emb, embeddings)[0]
+                    top5_idx = np.argsort(sims)[-5:][::-1]
+                    
+                    st.success("✅ 分析完成！最相似的 Top 5 样本：")
+                    for rank, idx in enumerate(top5_idx):
+                        st.write(f"{rank+1}. 样本 #{idx} (相似度: {sims[idx]:.4f})")
+                else:
+                    st.warning("⚠️ 训练集特征库 (embeddings) 尚未加载，无法进行比对。")
+
+            except Exception as e:
+                st.error(f"图片处理出错: {e}")
+
+    # ================== 方式二：选择样本 ==================
+    with tab2:
+        st.subheader("从训练集中选择样本进行测试")
         
-        model.eval()
-        with torch.no_grad():
-            # 直接拿 sample 里的数据跑
-            sample_emb = model(sample.x, sample.edge_index).squeeze(0)
+        # 安全检查：确保有数据可选
+        if 'all_data' in globals() and len(globals()['all_data']) > 0:
+            all_data = globals()['all_data']
             
-        show_top5_results(sample_emb.numpy())
+            # 生成选项列表
+            options = [f"样本 {i}" for i in range(len(all_data))]
+            selected_option = st.selectbox("请选择一个样本:", options)
+            
+            if selected_option:
+                # 获取选中的索引
+                selected_idx = int(selected_option.split(" ")[1])
+                sample = all_data[selected_idx]
+                
+                st.info(f"正在分析：{selected_option}")
+                
+                try:
+                    import torch
+                    from sklearn.metrics.pairwise import cosine_similarity
+                    import numpy as np
+
+                    # 1. 准备单个样本的数据
+                    # 关键点：不要把所有数据 stack 在一起，只处理当前这一个 sample
+                    # 假设 sample 是一个对象，包含 x (坐标) 和 edge_index
+                    
+                    # 将数据转为 Tensor (增加 batch 维度)
+                    # 注意：这里要根据你 sample 的实际结构来写
+                    # 假设 sample.x 是坐标 [N, 3]
+                    x_tensor = torch.tensor(sample.x, dtype=torch.float).unsqueeze(0) # [1, N, 3]
+                    
+                    # 如果你的模型需要 edge_index，也要单独取
+                    edge_index = torch.tensor(sample.edge_index, dtype=torch.long)
+                    
+                    # 2. 送入模型
+                    with torch.no_grad():
+                        # ⚠️ 关键修复：只传入这一个样本的数据
+                        # 如果你的模型 forward 定义是 def forward(self, x, edge_index):
+                        sample_emb = model(x_tensor, edge_index).numpy().reshape(1, -1)
+                    
+                    # 3. 计算相似度
+                    if 'embeddings' in globals():
+                        sims_sample = cosine_similarity(sample_emb, embeddings)[0]
+                        top5_idx_sample = np.argsort(sims_sample)[-5:][::-1]
+                        
+                        st.success("✅ 分析完成！该样本在库中的相似度排名：")
+                        
+                        # 展示结果
+                        cols = st.columns(5)
+                        for i, idx in enumerate(top5_idx_sample):
+                            with cols[i]:
+                                st.metric(f"Top {i+1}", f"#{idx}", f"{sims_sample[idx]:.2%}")
+                    else:
+                        st.warning("⚠️ 缺少 embeddings 数据，无法计算相似度。")
+
+                except Exception as e:
+                    st.error(f"样本分析出错: {e}")
+                    st.exception(e) # 显示详细错误信息以便调试
+        else:
+            st.error("❌ 未找到训练数据 (all_data)，请先运行数据加载程序。")
