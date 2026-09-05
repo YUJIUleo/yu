@@ -274,16 +274,28 @@ elif page == "🔮 预测演示":
         for i, idx in enumerate(top5_idx):
             sim_val = sims[idx] * 100
             true_type = type_names[labels[idx]]
-            st.progress(sim_val / 100)
-            st.caption(f"第{i+1}名：样本#{idx} | 真实类型：**{true_type}** | 相似度：**{sim_val:.1f}%**")
+
+try:
+    # 如果 sim_val 是数组，取第一个值；如果是数字，直接转 float
+    current_progress = float(np.array(sim_val).flatten()[0]) / 100.0
+    
+    # 防止数值溢出导致报错（限制在 0 到 1 之间）
+    current_progress = max(0.0, min(1.0, current_progress))
+    
+    st.progress(current_progress)
+except Exception as e:
+    # 如果计算出错，至少给个默认进度，防止程序崩溃
+    st.progress(1.0) 
+    st.warning(f"进度条显示异常: {e}")
+    st.caption(f"第{i+1}名：样本#{idx} | 真实类型：**{true_type}** | 相似度：**{sim_val:.1f}%**")
         
         # === 嵌入空间可视化（上传样本） ===
-        st.subheader("📊 嵌入空间位置")
+    st.subheader("📊 嵌入空间位置")
         
-        fig = go.Figure()
+    fig = go.Figure()
         
         # 画背景云团（所有训练数据，按类型着色）
-        for label_id, name in type_names.items():
+    for label_id, name in type_names.items():
             mask = labels == label_id
             fig.add_trace(go.Scatter3d(
                 x=umap_3d[mask, 0],
@@ -295,8 +307,8 @@ elif page == "🔮 预测演示":
             ))
         
         # 画当前上传样本（红色大球）— 用最近邻的位置作为参考
-        nearest_pos = umap_3d[top5_idx[0]]
-        fig.add_trace(go.Scatter3d(
+    nearest_pos = umap_3d[top5_idx[0]]
+    fig.add_trace(go.Scatter3d(
             x=[nearest_pos[0]],
             y=[nearest_pos[1]],
             z=[nearest_pos[2]],
@@ -307,14 +319,14 @@ elif page == "🔮 预测演示":
             name='上传样本'
         ))
         
-        fig.update_layout(
+    fig.update_layout(
             scene=dict(xaxis_title='UMAP1', yaxis_title='UMAP2', zaxis_title='UMAP3'),
             height=600,
             title=f"嵌入空间可视化（预测：{type_names[pred_label]}，置信度：{pred_confidence:.0%}）"
         )
-        st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
         
-        st.markdown("---")
+    st.markdown("---")
 
     # ==================== 方式二：选择预设测试样本 ====================
     st.subheader("🗄️ 方式二：选择预设测试样本")
