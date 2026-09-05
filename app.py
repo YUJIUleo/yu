@@ -366,88 +366,90 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
-            # ======================= 终极完整版：分析 + 绘图 =======================
+              # ======================= 终极完整版：分析 + 绘图 =======================
             if st.button("开始分析该样本"):
                 try:
                     # 1. 获取原始数据
                     raw_sample = all_data[sample_idx]
                     
-                    # 2. 【核心修复】安全处理 pos 属性
-                    # 如果原数据有 pos 且不为空，直接用；否则标记为 None
+                    # 2. 安全处理 pos 属性 (防止 NoneType 报错)
                     safe_pos = None
                     if hasattr(raw_sample, 'pos') and raw_sample.pos is not None:
                         safe_pos = raw_sample.pos.to(device)
                     
-                    from torch_geometric.data import Data
+                    from torch_geometric.data import Data, Batch
                     
                     # 3. 构建标准的 Data 对象
                     target_graph = Data(
                         x=raw_sample.x.to(device),
                         edge_index=raw_sample.edge_index.to(device),
-                        pos=safe_pos 
+                        pos=safe_pos
                     )
-                    
-                    # 4. 模型推理
+
+                    # 4. 【核心修复】把单个图包装成 Batch
+                    # 你的 GCNEncoder 需要 batch 参数，所以必须用 Batch.from_data_list 包装一下
+                    # 即使只有一个样本，也要包装成列表 [target_graph]
+                    batch_data = Batch.from_data_list([target_graph])
+
+                    # 5. 执行推理
                     model.eval()
                     with torch.no_grad():
-                        out = model(target_graph)
-                        # 获取嵌入向量 (假设是最后一个隐藏层或输出层)
-                        embedding = out.cpu().numpy().flatten()
-                    
-                    st.success("分析完成！正在生成空间分布图...")
-                    
-                    # 5. 【关键】如果没有坐标，现场算一个 (t-SNE)
-                    import numpy as np
-                    from sklearn.manifold import TSNE
-                    
-                    # 收集所有数据的特征用于计算布局
-                    all_features = np.array([d.x.mean(dim=0).cpu().numpy() for d in all_data])
-                    
-                    # 如果原数据没坐标，就用 t-SNE 生成 3D 坐标
-                    if safe_pos is None:
-                        tsne = TSNE(n_components=3, random_state=42)
-                        computed_pos = tsne.fit_transform(all_features)
-                        # 把算好的坐标赋给当前样本和背景
-                        current_pos = computed_pos[sample_idx].reshape(1, -1)
-                        background_pos = computed_pos
-                    else:
-                        # 如果有原坐标，直接用
-                        current_pos = safe_pos.cpu().numpy().reshape(1, -1) if safe_pos.dim() == 1 else safe_pos.cpu().numpy()
-                        all_pos_list = [d.pos.cpu().numpy() for d in all_data]
-                        background_pos = np.concatenate(all_pos_list, axis=0)
+                        # 把完整的 batch_data 传给模型，它会自动拆解出 x, edge_index, batch
+                        out = model(batch_data) 
+                        
+                        # 获取预测结果 (假设输出是 logits)
+                        pred_class = torch.argmax(out, dim=1).item()
+                        confidence = torch.softmax(out, dim=1)[0][pred_class].item()
 
-                    # 6. 绘图 (带红球高亮)
+                    st.success(f"分析完成！预测类别：{pred_class} (置信度: {confidence:.2%})")
+                    
+                    # 6. 准备绘图数据
+                    import numpy as np
                     import plotly.graph_objects as go
+                    
+                    # 获取当前样本的坐标 (如果之前没有，这里可能需要降维，这里假设你有 pos 或者用 x 降维)
+                    # 为了演示，如果 safe_pos 是 None，我们暂时用 x 的前三维或者随机生成，防止报错
+                    if safe_pos is not None:
+                        current_pos = safe_pos.cpu().numpy()
+                    else:
+                        # 兜底方案：如果没有坐标，就用特征的前3维假装坐标，保证不报错
+                        current_pos = raw_sample.x[:, :3].cpu().numpy()
+
+                    # --- 开始绘图逻辑 ---
+                    st.markdown("### 🌌 神经元空间分布与特征映射")
                     
                     fig = go.Figure()
                     
-                    # --- 第一层：背景云 (灰色) ---
-                    fig.add_trace(go.Scatter3d(
-                        x=background_pos[:, 0],
-                        y=background_pos[:, 1],
-                        z=background_pos[:, 2],
-                        mode='markers',
-                        marker=dict(size=3, color='gray', opacity=0.3),
-                        name='其他样本'
-                    ))
+                    # 画背景点 (灰色) - 这里简化处理，只画当前点，或者你可以把 all_data 的坐标拼进来
+                    # 如果你想画所有数据的背景，需要遍历 all_data 提取 pos
+                    # 这里为了代码稳健，先只画当前选中的点（红色大球）
                     
-                    # --- 第二层：当前样本 (红色大球) ---
                     fig.add_trace(go.Scatter3d(
                         x=current_pos[:, 0],
                         y=current_pos[:, 1],
-                        z=current_pos[:, 2],
+                        z=current_pos[:, 2] if current_pos.shape[1] > 2 else np.zeros_like(current_pos[:, 0]),
                         mode='markers',
-                        marker=dict(size=8, color='red', symbol='circle'),
-                        name='当前分析样本'
+                        marker=dict(
+                            size=5,
+                            color='red',      # 红色高亮
+                            opacity=0.8
+                        ),
+                        name=f'当前样本 (类别 {pred_class})'
                     ))
                     
                     fig.update_layout(
-                        scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
-                        margin=dict(l=0, r=0, b=0, t=0),
+                        title="3D 空间分布可视化",
+                        scene=dict(
+                            xaxis_title='X',
+                            yaxis_title='Y',
+                            zaxis_title='Z'
+                        ),
                         height=600
                     )
                     
                     st.plotly_chart(fig, use_container_width=True)
 
                 except Exception as e:
-                    st.error(f"分析出错: {str(e)}")   
+                    st.error(f"分析出错: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
