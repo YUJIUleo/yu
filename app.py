@@ -373,15 +373,33 @@ elif page == "🔮 预测演示":
                 
                 # 2. 开始尝试执行 (try)
                 try:
-                    # *** 核心逻辑：只取当前选中的那一个样本 ***
-                    target_graph = all_data[sample_idx].to(device)
-                    model.eval()
+                   # 1. 获取原始数据
+                    raw_sample = all_data[sample_idx]
                     
-                    with torch.no_grad():
-                        batch_vec = torch.zeros(target_graph.x.size(0), dtype=torch.long, device=device)
-                        out = model(target_graph, target_graph.edge_index, batch_vec)
-                        single_embedding = out.cpu().numpy() # 转回 CPU 并变成 numpy
+                    # 2. 【核心修复】强制重构 Data 对象
+                    # 这一步能解决 'GlobalStorage' 报错，确保数据是完整的
+                    from torch_geometric.data import Data
                     
+                    target_graph = Data(
+                        x=raw_sample.x.to(device),          # 节点特征
+                        edge_index=raw_sample.edge_index.to(device), # 边索引
+                        pos=raw_sample.pos.to(device) if hasattr(raw_sample, 'pos') and raw_sample.pos is not None else None # 位置信息(如果有)
+                    )
+                    
+                    # 3. 运行模型 (注意：现在只传 graph，因为 edge_index 已经在 graph 里了)
+                    # 如果你的 model forward 定义是 def forward(self, data): 用这一行：
+                    out = model(target_graph) 
+                    
+                    # 如果你的 model forward 定义是 def forward(self, x, edge_index, batch): 用这一行：
+                    # batch_vec = torch.zeros(target_graph.x.size(0), dtype=torch.long, device=device)
+                    # out = model(target_graph.x, target_graph.edge_index, batch_vec)
+
+                    # 4. 提取向量 (假设输出是 [1, dim] 或 [dim])
+                    if out.dim() > 1:
+                        embedding = out[0].cpu().detach().numpy()
+                    else:
+                        embedding = out.cpu().detach().numpy()
+                        
                     st.success(f"样本 {sample_idx} 分析完成！")
                     
                     # --- 显示向量数值 ---
