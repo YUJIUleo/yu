@@ -266,8 +266,6 @@ elif page == "🔮 预测演示":
         for i, idx in enumerate(top5_idx):
             sim_val = sims[idx] * 100
             true_type = type_names[labels[idx]]
-    safe_progress = max(0, min(100, sim_val))
-    st.progress(safe_progress / 100.0)
     st.caption(f"第{i+1}名：样本#{idx} | 真实类型：**{true_type}** | 相似度：**{sim_val:.1f}%**")
         
     st.markdown("---")
