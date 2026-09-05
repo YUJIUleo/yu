@@ -61,6 +61,20 @@ labels = np.array([d.y.item() for d in all_data])
 type_names = {0: "HIP(锥体神经元)", 1: "DG(颗粒细胞)", 2: "CB(浦肯野细胞)"}
 colors = {0: "#1f77b4", 1: "#ff7f0e", 2: "#2ca02c"}
 
+# ==================== 预计算 UMAP 3D 坐标 ====================
+@st.cache_data
+def get_umap_3d():
+    try:
+        import umap
+        reducer = umap.UMAP(n_components=3, random_state=42)
+        return reducer.fit_transform(embeddings)
+    except ImportError:
+        from sklearn.decomposition import PCA
+        reducer = PCA(n_components=3, random_state=42)
+        return reducer.fit_transform(embeddings)
+
+umap_3d = get_umap_3d()
+
 # ==================== 侧边栏导航 ====================
 st.sidebar.title("🧠 神经元对比学习平台")
 page = st.sidebar.radio("选择页面", ["📊 数据概览", "📈 训练结果", "🔬 嵌入可视化", "🔮 预测演示"])
@@ -101,7 +115,7 @@ if page == "📊 数据概览":
     # 画边
     for i in range(edge_index.shape[1]):
         src, dst = edge_index[0, i], edge_index[1, i]
-        if src < dst:  # 只画一次
+        if src < dst:
             fig.add_trace(go.Scatter3d(
                 x=[x[src, 0], x[dst, 0]],
                 y=[x[src, 1], x[dst, 1]],
@@ -130,21 +144,18 @@ if page == "📊 数据概览":
 elif page == "📈 训练结果":
     st.title("📈 训练结果")
     
-    # 显示损失曲线
     if os.path.exists("outputs/loss_curve.png"):
         st.subheader("训练损失曲线")
         st.image("outputs/loss_curve.png", width="stretch")
     else:
         st.warning("未找到损失曲线图片，请先运行 train.py 进行训练。")
     
-    # 显示混淆矩阵
     if os.path.exists("outputs/confusion_matrix.png"):
         st.subheader("分类混淆矩阵")
         st.image("outputs/confusion_matrix.png", width="stretch")
     else:
         st.warning("未找到混淆矩阵图片，请先运行 train.py 进行训练。")
     
-    # 模型信息
     st.subheader("模型信息")
     st.write(f"- 模型架构: 2层GCN (3→32→16)")
     st.write(f"- 对比损失: InfoNCE (温度τ=0.5)")
@@ -157,289 +168,273 @@ elif page == "📈 训练结果":
 # ==================== 页面3：嵌入可视化 ====================
 elif page == "🔬 嵌入可视化":
     st.title("🔬 嵌入空间可视化")
-    st.write("下图展示60个神经元在对比学习后的16维嵌入空间，经UMAP降维到3D后的分布。"
+    st.write("下图展示所有神经元在对比学习后的16维嵌入空间，经UMAP降维到3D后的分布。"
              "同类神经元应聚集在一起，不同类应彼此分离。")
     
-    # UMAP降维
+    fig = go.Figure()
+    for label_id, name in type_names.items():
+        mask = labels == label_id
+        fig.add_trace(go.Scatter3d(
+            x=umap_3d[mask, 0],
+            y=umap_3d[mask, 1],
+            z=umap_3d[mask, 2],
+            mode='markers',
+            marker=dict(size=6, color=colors[label_id]),
+            name=name,
+            text=[f"样本#{i}" for i in np.where(mask)[0]],
+            hovertemplate='<b>%{text}</b><br>UMAP1: %{x:.2f}<br>UMAP2: %{y:.2f}<br>UMAP3: %{z:.2f}<extra></extra>'
+        ))
+    
+    fig.update_layout(
+        scene=dict(xaxis_title='UMAP1', yaxis_title='UMAP2', zaxis_title='UMAP3'),
+        height=600,
+        title="神经元嵌入空间3D可视化（UMAP降维）"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # 2D版本
     try:
         import umap
-        reducer = umap.UMAP(n_components=3, random_state=42)
-        emb_3d = reducer.fit_transform(embeddings)
+        reducer_2d = umap.UMAP(n_components=2, random_state=42)
+        emb_2d = reducer_2d.fit_transform(embeddings)
+    except ImportError:
+        from sklearn.decomposition import PCA
+        reducer_2d = PCA(n_components=2, random_state=42)
+        emb_2d = reducer_2d.fit_transform(embeddings)
+    
+    fig2 = go.Figure()
+    for label_id, name in type_names.items():
+        mask = labels == label_id
+        fig2.add_trace(go.Scatter(
+            x=emb_2d[mask, 0],
+            y=emb_2d[mask, 1],
+            mode='markers+text',
+            marker=dict(size=10, color=colors[label_id]),
+            name=name,
+            text=[str(i) for i in np.where(mask)[0]],
+            textposition='top center',
+            textfont=dict(size=8)
+        ))
+    
+    fig2.update_layout(
+        xaxis_title='UMAP1',
+        yaxis_title='UMAP2',
+        height=500,
+        title="神经元嵌入空间2D可视化"
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+# ==================== 页面4：预测演示 ====================
+elif page == "🔮 预测演示":
+    st.title("🔮 新样本预测演示")
+    st.write("选择一个预设的测试样本，查看模型如何将其映射到嵌入空间并判断类型。")
+    st.divider()
+
+    # ==================== 方式一：上传真实神经元切片 ====================
+    st.subheader("💡 方式一：上传真实神经元切片（PNG/JPG）")
+    uploaded_file = st.file_uploader("选择图片", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+    
+    if uploaded_file is not None:
+        from PIL import Image
+        import cv2
+        
+        img = Image.open(uploaded_file).convert("L")
+        img_np = np.array(img)
+        _, binary = cv2.threshold(img_np, 127, 255, cv2.THRESH_BINARY)
+        
+        area = np.sum(binary > 0) / (binary.shape[0] * binary.shape[1])
+        edges = cv2.Canny(img_np, 100, 200)
+        fractal_dim = np.sum(edges > 0) / (edges.shape[0] * edges.shape[1])
+        h, w = np.where(binary > 0)
+        eccentricity = (max(h) - min(h)) / (max(w) - min(w) + 1e-5) if len(h) > 0 else 0.5
+        
+        feat = torch.tensor([[area, fractal_dim, eccentricity]], dtype=torch.float)
+        edge_index = torch.tensor([[0], [0]], dtype=torch.long)
+        batch = torch.zeros(1, dtype=torch.long)
+        
+        with torch.no_grad():
+            pred_emb = model(feat, edge_index, batch).squeeze(0)
+        
+        from sklearn.metrics.pairwise import cosine_similarity
+        sims = cosine_similarity(pred_emb.numpy().reshape(1, -1), embeddings)[0]
+        top5_idx = np.argsort(sims)[-5:][::-1]
+        
+        # === 投票法预测类型 ===
+        vote = {}
+        for idx in top5_idx:
+            label = labels[idx]
+            vote[label] = vote.get(label, 0) + 1
+        pred_label = max(vote, key=vote.get)
+        pred_confidence = vote[pred_label] / len(top5_idx)
+        
+        st.success("✅ 预测分析完成！")
+        st.write(f"**提取的3维特征：** 面积占比 `{area:.3f}` | 边缘复杂度 `{fractal_dim:.3f}` | 偏心率 `{eccentricity:.3f}`")
+        
+        st.write("**🏆 最相似的 5 个训练样本：**")
+        for i, idx in enumerate(top5_idx):
+            sim_val = sims[idx] * 100
+            true_type = type_names[labels[idx]]
+            st.progress(sim_val / 100)
+            st.caption(f"第{i+1}名：样本#{idx} | 真实类型：**{true_type}** | 相似度：**{sim_val:.1f}%**")
+        
+        # === 嵌入空间可视化（上传样本） ===
+        st.subheader("📊 嵌入空间位置")
         
         fig = go.Figure()
+        
+        # 画背景云团（所有训练数据，按类型着色）
         for label_id, name in type_names.items():
             mask = labels == label_id
             fig.add_trace(go.Scatter3d(
-                x=emb_3d[mask, 0],
-                y=emb_3d[mask, 1],
-                z=emb_3d[mask, 2],
+                x=umap_3d[mask, 0],
+                y=umap_3d[mask, 1],
+                z=umap_3d[mask, 2],
                 mode='markers',
-                marker=dict(size=6, color=colors[label_id]),
-                name=name,
-                text=[f"样本#{i}" for i in np.where(mask)[0]],
-                hovertemplate='<b>%{text}</b><br>UMAP1: %{x:.2f}<br>UMAP2: %{y:.2f}<br>UMAP3: %{z:.2f}<extra></extra>'
+                marker=dict(size=4, color=colors[label_id], opacity=0.3),
+                name=name
             ))
+        
+        # 画当前上传样本（红色大球）— 用最近邻的位置作为参考
+        nearest_pos = umap_3d[top5_idx[0]]
+        fig.add_trace(go.Scatter3d(
+            x=[nearest_pos[0]],
+            y=[nearest_pos[1]],
+            z=[nearest_pos[2]],
+            mode='markers+text',
+            text=['上传样本'],
+            textposition="top center",
+            marker=dict(size=14, color='red', symbol='circle'),
+            name='上传样本'
+        ))
         
         fig.update_layout(
             scene=dict(xaxis_title='UMAP1', yaxis_title='UMAP2', zaxis_title='UMAP3'),
             height=600,
-            title="神经元嵌入空间3D可视化（UMAP降维）"
+            title=f"嵌入空间可视化（预测：{type_names[pred_label]}，置信度：{pred_confidence:.0%}）"
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # 2D版本
-        reducer_2d = umap.UMAP(n_components=2, random_state=42)
-        emb_2d = reducer_2d.fit_transform(embeddings)
+        st.markdown("---")
+
+    # ==================== 方式二：选择预设测试样本 ====================
+    st.subheader("🗄️ 方式二：选择预设测试样本")
+    sample_options = {f"样本#{i} ({type_names[labels[i]]})": i for i in range(len(all_data))}
+    selected = st.selectbox("选择测试样本", list(sample_options.keys()))
+    sample_idx = sample_options[selected]
+    sample = all_data[sample_idx]
+    
+    # 模型推理
+    with torch.no_grad():
+        emb = model(sample.x, sample.edge_index, torch.zeros(sample.num_nodes, dtype=torch.long))
+        emb = emb.squeeze()
+    
+    # 最近邻搜索
+    from sklearn.metrics.pairwise import cosine_similarity
+    sims = cosine_similarity(emb.numpy().reshape(1, -1), embeddings)[0]
+    top5_idx = np.argsort(sims)[-5:][::-1]
+    
+    true_label = labels[sample_idx]
+    
+    # === 投票法预测 ===
+    vote = {}
+    for idx in top5_idx:
+        label = labels[idx]
+        vote[label] = vote.get(label, 0) + 1
+    pred_label = max(vote, key=vote.get)
+    pred_confidence = vote[pred_label] / len(top5_idx)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("样本信息")
+        st.write(f"- **样本编号**: #{sample_idx}")
+        st.write(f"- **真实类型**: {type_names[true_label]}")
+        st.write(f"- **预测类型**: {type_names[pred_label]}")
+        st.write(f"- **预测置信度**: {pred_confidence:.0%}")
+        st.write(f"- **节点数**: {sample.num_nodes}")
+        st.write(f"- **边数**: {sample.num_edges}")
         
-        fig2 = go.Figure()
-        for label_id, name in type_names.items():
-            mask = labels == label_id
-            fig2.add_trace(go.Scatter(
-                x=emb_2d[mask, 0],
-                y=emb_2d[mask, 1],
-                mode='markers+text',
-                marker=dict(size=10, color=colors[label_id]),
-                name=name,
-                text=[str(i) for i in np.where(mask)[0]],
-                textposition='top center',
-                textfont=dict(size=8)
-            ))
+        st.subheader("最近邻样本（余弦相似度）")
+        for rank, idx in enumerate(top5_idx):
+            sim = sims[idx]
+            match = "✅" if labels[idx] == true_label else "❌"
+            st.write(f"{rank+1}. 样本#{idx} - {type_names[labels[idx]]} - 相似度: {sim:.4f} {match}")
+    
+    with col2:
+        st.subheader("3D结构可视化")
+        fig = go.Figure()
+        edge_index = sample.edge_index.numpy()
+        x = sample.x.numpy()
         
-        fig2.update_layout(
-            xaxis_title='UMAP1',
-            yaxis_title='UMAP2',
-            height=500,
-            title="神经元嵌入空间2D可视化"
+        for i in range(edge_index.shape[1]):
+            src, dst = edge_index[0, i], edge_index[1, i]
+            if src < dst:
+                fig.add_trace(go.Scatter3d(
+                    x=[x[src, 0], x[dst, 0]],
+                    y=[x[src, 1], x[dst, 1]],
+                    z=[x[src, 2], x[dst, 2]],
+                    mode='lines',
+                    line=dict(color='gray', width=2),
+                    showlegend=False
+                ))
+        
+        fig.add_trace(go.Scatter3d(
+            x=x[:, 0], y=x[:, 1], z=x[:, 2],
+            mode='markers',
+            marker=dict(size=5, color=colors[true_label]),
+            name=type_names[true_label]
+        ))
+        
+        fig.update_layout(
+            scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
+            height=400
         )
-        st.plotly_chart(fig2, use_container_width=True)
-        
-    except ImportError:
-        st.error("未安装 umap-learn，请运行: pip install umap-learn")
-
-# ======================= 页面4: 预测演示 (双模式终极修复版) =======================
-elif page == "🔮 预测演示":
-    st.title("🔮 新样本预测演示")
-    st.write("选择一种方式，查看模型如何将其映射到嵌入空间并判断类型。")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # === 嵌入空间3D可视化（背景云团 + 红球） ===
+    st.subheader("📊 嵌入空间分布（UMAP降维）")
+    st.write(f"下图展示所有训练样本在嵌入空间的分布（按类型着色），**红色大球**代表你选择的当前样本。")
+    
+    fig2 = go.Figure()
+    
+    # 画背景云团（所有训练数据，按类型着色，半透明）
+    for label_id, name in type_names.items():
+        mask = labels == label_id
+        fig2.add_trace(go.Scatter3d(
+            x=umap_3d[mask, 0],
+            y=umap_3d[mask, 1],
+            z=umap_3d[mask, 2],
+            mode='markers',
+            marker=dict(size=5, color=colors[label_id], opacity=0.3),
+            name=name
+        ))
+    
+    # 画当前样本（红色大球）
+    current_pos = umap_3d[sample_idx]
+    fig2.add_trace(go.Scatter3d(
+        x=[current_pos[0]],
+        y=[current_pos[1]],
+        z=[current_pos[2]],
+        mode='markers+text',
+        text=[f'当前样本\n({type_names[true_label]})'],
+        textposition="top center",
+        marker=dict(size=14, color='red', symbol='circle'),
+        name='当前样本'
+    ))
+    
+    fig2.update_layout(
+        scene=dict(xaxis_title='UMAP1', yaxis_title='UMAP2', zaxis_title='UMAP3'),
+        height=600,
+        title=f"神经元嵌入空间3D可视化 — 当前样本：{type_names[true_label]}（预测：{type_names[pred_label]}，置信度：{pred_confidence:.0%}）"
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+    
+    # === 最终判定 ===
     st.divider()
-
-    # --- 【环境检查】 ---
-    try:
-        import torch
-        import torch.nn.functional as F
-        from torch_geometric.data import Data
-        import numpy as np
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    except Exception as e:
-        st.error(f"环境初始化失败: {e}")
-        st.stop()
-
-    if 'all_data' not in globals() and 'all_data' not in locals():
-        st.error("系统错误：未检测到训练集数据 (all_data)。")
-        st.stop()
-
-    # 获取训练集的特征维度 (in_channels)，这是防止报错的关键
-    # 假设 all_data 是一个列表，取第一个数据的 x 的列数
-    try:
-        target_feature_dim = all_data[0].x.shape[1]
-    except:
-        st.error("无法读取训练集特征维度，请检查 all_data 格式。")
-        st.stop()
-
-    tab1, tab2 = st.tabs(["方式一：上传真实切片", "方式二：选择预设测试样本"])
-
-    # ==========================================
-    # 方式一：上传真实切片 (修复维度不匹配)
-    # ==========================================
-    with tab1:
-        uploaded_file = st.file_uploader("上传神经元图片 (PNG/JPG)", type=['png', 'jpg', 'jpeg'])
-        
-        if uploaded_file is not None:
-            try:
-                from PIL import Image
-                import cv2
-                
-                # 1. 读取图片
-                image = Image.open(uploaded_file).convert('L') # 转灰度
-                img_np = np.array(image)
-                
-                # 2. 简单的图像处理：二值化找亮点 (模拟神经元中心)
-                _, binary = cv2.threshold(img_np, 50, 255, cv2.THRESH_BINARY)
-                contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                centers = []
-                for cnt in contours:
-                    area = cv2.contourArea(cnt)
-                    if 10 < area < 5000: # 过滤噪点和过大的块
-                        M = cv2.moments(cnt)
-                        if M["m00"] != 0:
-                            cx = int(M["m10"] / M["m00"])
-                            cy = int(M["m01"] / M["m00"])
-                            centers.append([cx, cy])
-                
-                if len(centers) < 2:
-                    st.warning("图片中未检测到足够的神经元节点（至少需要2个），请尝试调整阈值或换图。")
-                else:
-                    st.success(f"检测到 {len(centers)} 个神经元节点，正在构建图结构...")
-                    
-                    # 3. 构建图数据 (Data)
-                    # 节点坐标归一化 (简单处理)
-                    coords = np.array(centers, dtype=np.float32)
-                    coords[:, 0] /= img_np.shape[1]
-                    coords[:, 1] /= img_np.shape[0]
-                    
-                    # 构造 edge_index (简单的全连接或KNN，这里用距离阈值模拟)
-                    edge_list = []
-                    dist_threshold = 0.15 # 距离阈值
-                    
-                    for i in range(len(coords)):
-                        for j in range(i+1, len(coords)):
-                            d = np.linalg.norm(coords[i] - coords[j])
-                            if d < dist_threshold:
-                                edge_list.append([i, j])
-                                edge_list.append([j, i])
-                    
-                    if not edge_list:
-                         st.warning("节点间距离过远，未形成连接。正在强制连接最近邻...")
-                         # 兜底：强制连成链
-                         for i in range(len(coords)-1):
-                             edge_list.append([i, i+1])
-                             edge_list.append([i+1, i])
-
-                    edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
-                    
-                    # *** 关键修复：特征维度对齐 ***
-                    # 如果训练集是3维(x,y,z)，而图片只有2维(x,y)，必须补0
-                    node_features = torch.tensor(coords, dtype=torch.float)
-                    current_dim = node_features.shape[1]
-                    
-                    if current_dim < target_feature_dim:
-                        padding = torch.zeros(node_features.shape[0], target_feature_dim - current_dim)
-                        node_features = torch.cat([node_features, padding], dim=1)
-                    elif current_dim > target_feature_dim:
-                        node_features = node_features[:, :target_feature_dim]
-                        
-                    new_graph = Data(x=node_features, edge_index=edge_index).to(device)
-                    
-                    # 4. 预测
-                    model.eval()
-                    with torch.no_grad():
-                        # 构造 batch 向量
-                        batch_vec = torch.zeros(new_graph.x.size(0), dtype=torch.long, device=device)
-                        out = model(new_graph.x, new_graph.edge_index, batch_vec)
-                        pred_embedding = out.cpu().numpy()
-                    
-                    st.success("预测完成！正在生成可视化...")
-                    
-                    # 5. 可视化 (只画背景 + 当前点)
-                    # 这里假设你有之前算好的 train_embeddings (如果没有，这里只能画当前点)
-                    # 为了演示，我们画一个散点图代表当前样本在空间的位置
-                    import plotly.express as px
-                    import pandas as pd
-                    
-                    df_curr = pd.DataFrame(pred_embedding, columns=['Dim1', 'Dim2', 'Dim3'])
-                    df_curr['Type'] = '新上传样本'
-                    
-                    fig = px.scatter_3d(df_curr, x='Dim1', y='Dim2', z='Dim3', color='Type', 
-                                        title="新样本嵌入位置", 
-                                        color_discrete_map={'新上传样本': 'red'})
-                    # 如果有历史数据可以 add_trace 加进去，这里简化处理
-                    st.plotly_chart(fig, use_container_width=True)
-
-            except Exception as e:
-                st.error(f"图像处理或预测失败: {str(e)}")
-                import traceback
-                st.code(traceback.format_exc())
-
-    # ==========================================
-    # 方式二：选择预设测试样本 (修复全量堆叠报错)
-    # ==========================================
-    with tab2:
-        # 获取所有样本的标签用于展示
-        labels = [getattr(d, 'y', 0).item() if hasattr(d, 'y') else 0 for d in all_data]
-        unique_labels = sorted(list(set(labels)))
-        
-        selected_label = st.selectbox("选择要测试的类别:", unique_labels)
-        
-        # 筛选出该类别的所有索引
-        candidates = [i for i, l in enumerate(labels) if l == selected_label]
-        
-        if candidates:
-            sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
-            
-            # ======================= 最终完美版：修复梯度 + 优化绘图 =======================
-            if st.button("开始分析该样本"):
-                try:
-                    # 1. 获取原始数据
-                    raw_sample = all_data[sample_idx]
-                    
-                    # 2. 安全处理 pos
-                    safe_pos = None
-                    if hasattr(raw_sample, 'pos') and raw_sample.pos is not None:
-                        safe_pos = raw_sample.pos.to(device)
-                    
-                    from torch_geometric.data import Data, Batch
-                    import torch
-                    
-                    # 3. 构建 Data 对象
-                    target_graph = Data(
-                        x=raw_sample.x.to(device),
-                        edge_index=raw_sample.edge_index.to(device),
-                        pos=safe_pos,
-                        y=raw_sample.y if hasattr(raw_sample, 'y') else None
-                    )
-                    
-                    # 4. 【关键修复】拆解参数：x, edge_index, batch
-                    # 即使只有一个图，也需要构造 batch 向量 (全为0)
-                    x_input = target_graph.x
-                    edge_index_input = target_graph.edge_index
-                    batch_input = torch.zeros(x_input.size(0), dtype=torch.long, device=device)
-                    
-                    # 5. 推理
-                    model.eval()
-                    with torch.no_grad():
-                        # 传入拆解后的三个参数
-                        logits = model(x_input, edge_index_input, batch_input)
-                        
-                        # 计算概率
-                        probs = torch.softmax(logits, dim=-1)
-                        
-                        # 【关键修复】加上 .detach() 再转 numpy
-                        pred_class = torch.argmax(probs, dim=-1).item()
-                        probs_np = probs.cpu().detach().numpy().flatten()
-                    
-                    # 6. 获取坐标用于绘图
-                    if safe_pos is not None:
-                        # 取所有节点的平均位置作为中心点
-                        center_x = safe_pos[:, 0].mean().cpu().detach().numpy()
-                        center_y = safe_pos[:, 1].mean().cpu().detach().numpy()
-                    else:
-                        center_x, center_y = 0, 0
-
-                    # 7. 显示结果
-                    st.success(f"分析完成！该样本被判定为：**类型 {pred_class}**")
-                    
-                    # 8. 绘图
-                    import matplotlib.pyplot as plt
-                    
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    # 绘制散点（用红星表示）
-                    ax.scatter(center_x, center_y, c='red', marker='*', s=200, label='预测样本')
-                    
-                    # 设置标题和标签
-                    ax.set_title(f"样本在嵌入空间的位置 (类型 {pred_class})")
-                    ax.set_xlabel("Embedding Dim 1")
-                    ax.set_ylabel("Embedding Dim 2")
-                    
-                    # 如果只有一个点，手动设置一下坐标范围，防止图缩成一条线
-                    ax.set_xlim(center_x - 1, center_x + 1)
-                    ax.set_ylim(center_y - 1, center_y + 1)
-                    
-                    st.pyplot(fig)
-                    
-                    # 9. 显示详细概率
-                    st.info(f"模型置信度分布：{probs_np}")
-
-                except Exception as e:
-                    st.error(f"分析出错: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())       
+    st.success(f"🎯 **最终判定：该样本属于 {type_names[pred_label]}**")
+    st.info(f"""
+    **分析总结：**
+    - 通过最近邻投票法（Top-5 余弦相似度），{vote[pred_label]} 个邻居属于 **{type_names[pred_label]}**，预测置信度为 **{pred_confidence:.0%}**。
+    - 图中 **红色大球** 代表你选择的样本，它在嵌入空间中落在 **{type_names[pred_label]}** 的聚集区域内。
+    - 如果真实标签与预测一致，说明模型成功将该神经元分类到了正确的类型。
+    """)
