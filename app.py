@@ -366,99 +366,72 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
-                        # ======================= 最终修复版 =======================
+            # ======================= 最终修复版 (含背景点+错误处理) =======================
             
-            # 1. 按钮判断 (注意冒号)
+            # 1. 按钮点击事件
             if st.button("开始分析该样本"):
                 
-                # 2. try 必须缩进在 if 里面！
+                # 2. 开始尝试执行 (try)
                 try:
-                    # *** 关键：只取当前这一个样本 ***
-                    # 确保 all_data 是之前加载好的列表
+                    # *** 核心逻辑：只取当前选中的那一个样本 ***
                     target_graph = all_data[sample_idx].to(device)
-
                     model.eval()
+                    
                     with torch.no_grad():
-                        # 构造单样本的 batch 向量 (全0即可，因为GNN主要看结构)
                         batch_vec = torch.zeros(target_graph.x.size(0), dtype=torch.long, device=device)
-                        
-                        # 跑模型
-                        out = model(target_graph.x, target_graph.edge_index, batch_vec)
-                        
-                        # 拿到结果 (修正变量名)
-                        single_embedding = out.cpu().numpy()
-
-                    # 显示成功提示
+                        out = model(target_graph, target_graph.edge_index, batch_vec)
+                        single_embedding = out.cpu().numpy() # 转回 CPU 并变成 numpy
+                    
                     st.success(f"样本 {sample_idx} 分析完成！")
                     
-                    # --- 显示数值 ---
-                    st.markdown("### 🧬 嵌入向量前3维")
-                    vec_str = " ".join([f"{x:.6f}" for x in single_embedding[0][:3]])
+                    # --- 显示向量数值 ---
+                    st.markdown("### 🚀 嵌入向量前3维")
+                    vec_str = ", ".join([f"{x:.6f}" for x in single_embedding[0][:3]])
                     st.latex(f"[ {vec_str} ]")
+                    
+                    # --- 3D 可视化 (带背景参照) ---
+                    st.markdown("### 🌌 空间位置分布")
+                    
+                    import plotly.graph_objects as go
+                    
+                    # A. 准备背景数据 (所有样本)
+                    bg_x, bg_y, bg_z = [], [], []
+                    for g in all_data:
+                        pos = g.x[0].cpu().numpy() # 取第一个节点作为代表
+                        bg_x.append(pos[0])
+                        bg_y.append(pos[1])
+                        bg_z.append(pos[2])
+                    
+                    # B. 准备目标数据 (当前选中的样本)
+                    target_pos = all_data[sample_idx].x[0].cpu().numpy()
+                    
+                    # C. 绘图
+                    fig = go.Figure()
+                    
+                    # 添加背景灰点
+                    fig.add_trace(go.Scatter3d(
+                        x=bg_x, y=bg_y, z=bg_z,
+                        mode='markers',
+                        marker=dict(size=2, color='gray', opacity=0.3),
+                        name='所有样本 (背景)'
+                    ))
+                    
+                    # 添加目标红点
+                    fig.add_trace(go.Scatter3d(
+                        x=[target_pos[0]], y=[target_pos[1]], z=[target_pos[2]],
+                        mode='markers+text',
+                        text=[f"Sample {sample_idx}"],
+                        textposition="top center",
+                        marker=dict(size=8, color='red'),
+                        name='当前样本'
+                    ))
+                    
+                    fig.update_layout(scene=dict(xaxis_title='Dim 1', yaxis_title='Dim 2', zaxis_title='Dim 3'))
+                    st.plotly_chart(fig, use_container_width=True)
 
-                    # --- 3D 可视化 (带背景版) ---
-                                 # ======================= 3D 可视化 (带背景参照) =======================
-                st.markdown("### 🌌 空间位置分布")
-                
-                # 1. 准备画布
-                fig = go.Figure()
-                
-                # 2. 【新增】绘制背景：所有样本的分布 (灰色小点)
-                # 为了不卡顿，我们只取前3维
-                bg_x, bg_y, bg_z = [], [], []
-                bg_labels = [] # 如果你想按颜色区分类型，可以存这个
-                
-                # 遍历所有数据提取坐标
-                for g in all_data:
-                    # 假设 g.x 是节点特征，我们取第一行或者均值作为代表
-                    # 如果你的样本本身就是单节点图，直接用 g.x[0]
-                    pos = g.x[0].cpu().numpy() 
-                    bg_x.append(pos[0])
-                    bg_y.append(pos[1])
-                    bg_z.append(pos[2])
-
-                # 添加背景散点 trace
-                fig.add_trace(go.Scatter3d(
-                    x=bg_x, y=bg_y, z=bg_z,
-                    mode='markers',
-                    marker=dict(
-                        size=2,          # 背景点要小
-                        color='gray',    # 灰色
-                        opacity=0.1      # 透明度低一点，形成云雾感
-                    ),
-                    name='所有样本背景'
-                ))
-
-                # 3. 【原有】绘制前景：当前选中的样本 (红色大点)
-                # 使用之前算好的 single_embedding
-                target_pos = single_embedding 
-                
-                fig.add_trace(go.Scatter3d(
-                    x=[target_pos[0]], 
-                    y=[target_pos[1]], 
-                    z=[target_pos[2]],
-                    mode='markers+text',
-                    text=[f"样本 {sample_idx}"], # 显示文字标签
-                    textposition="top center",
-                    marker=dict(
-                        size=8,          # 前景点要大
-                        color='red',     # 红色醒目
-                        opacity=1.0,
-                        symbol='circle'
-                    ),
-                    name='当前样本'
-                ))
-
-                # 4. 更新布局
-                fig.update_layout(
-                    scene=dict(
-                        xaxis_title='Dim 1',
-                        yaxis_title='Dim 2',
-                        zaxis_title='Dim 3',
-                        aspectmode='data' # 保持比例真实
-                    ),
-                    margin=dict(l=0, r=0, b=0, t=30),
-                    height=600 # 图稍微大一点
-                )
-
-                st.plotly_chart(fig, use_container_width=True)
+                # 3. 【关键】这里补上了 except，防止报错
+                except Exception as e:
+                    st.error(f"分析过程中出错: {str(e)}")
+                    st.exception(e) # 显示详细错误信息
+            
+           
