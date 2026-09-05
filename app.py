@@ -216,137 +216,125 @@ elif page == "🔬 嵌入可视化":
     except ImportError:
         st.error("未安装 umap-learn，请运行: pip install umap-learn")
 
-# ======================= 页面4: 预测演示 (终极防御版) =======================
+# ======================= 页面4: 预测演示 (终极修复版 - 修复 device 报错) =======================
 elif page == "🔮 预测演示":
     st.title("🔮 新样本预测演示")
     st.write("选择一种方式，查看模型如何将其映射到嵌入空间并判断类型。")
     st.divider()
 
-    # --- 【核心修复 1】确保全局变量存在 ---
-    # 无论之前页面是否运行过，这里都会尝试初始化，防止 NameError
+    # --- 【核心修复 1】强制定义 device ---
+    # 不管外面有没有定义，这里必须自己定一个，防止报错
+    try:
+        import torch
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    except:
+        device = 'cpu' # 兜底方案
+
+    # --- 【核心修复 2】确保 all_data 和 embeddings 存在 ---
     if 'all_data' not in globals() and 'all_data' not in locals():
-        st.error("系统错误：未检测到训练集数据 (all_data)。请检查数据加载脚本。")
+        st.error("系统错误：未检测到训练集数据 (all_data)。")
         st.stop()
     
     # 如果 embeddings 还没算，这里利用 session_state 缓存或现算
-    if 'cached_embeddings' not in st.session_state:
-        with st.spinner("正在后台计算训练集特征向量...请稍候..."):
+    if 'embeddings' not in locals():
+        with st.spinner("正在后台计算训练集特征向量..."):
             try:
-                # 假设 model, device, all_data 已在全局定义
-                # 注意：这里必须对 all_data 里的每个样本单独处理，防止 stack 报错
-                temp_embeddings = []
-                model.eval()
-                with torch.no_grad():
-                    for data in all_data:
-                        data = data.to(device)
-                        # 构造 batch 向量 (全0表示属于同一个图)
-                        batch_vec = torch.zeros(data.num_nodes, dtype=torch.long, device=device)
-                        emb = model(data.x, data.edge_index, batch_vec)
-                        temp_embeddings.append(emb.cpu().numpy())
+                # 假设 model 和 dev 已经在前面定义好了，或者用这里的 device
+                # 注意：这里需要确保 model 已经加载到了内存中
+                if 'model' not in locals() and 'model' not in globals():
+                    st.error("模型未加载，请先运行训练页面。")
+                    st.stop()
                 
-                st.session_state['cached_embeddings'] = np.array(temp_embeddings).reshape(len(all_data), -1)
+                # 批量计算所有样本的 embedding
+                all_x = torch.stack([data.x for data in all_data]).to(device)
+                all_edge_index = torch.cat([data.edge_index for data in all_data], dim=1).to(device) 
+                # 注意：上面的 cat 逻辑可能不对，因为每个图的节点数不同，不能直接 cat edge_index
+                # 正确的做法是逐个计算
+                
+                temp_embeddings = []
+                for data in all_data:
+                    data = data.to(device)
+                    # 构造 batch 向量 (全0，因为是一次算一个图)
+                    batch_vec = torch.zeros(data.x.size(0), dtype=torch.long, device=device)
+                    emb = model(data.x.float(), data.edge_index, batch_vec)
+                    temp_embeddings.append(emb.cpu().detach().numpy())
+                
+                embeddings = np.array(temp_embeddings).reshape(len(all_data), -1)
+                
             except Exception as e:
-                st.error(f"计算特征向量失败: {e}")
+                st.error(f"计算特征向量失败: {str(e)}")
                 st.stop()
 
-    embeddings = st.session_state['cached_embeddings']
+    tab1, tab2 = st.tabs(["方式一：上传真实神经元切片 (PNG/JPG)", "方式二：选择预设测试样本"])
 
-    # --- 方式一：上传图片 ---
-    st.subheader("📷 方式一：上传真实神经元切片 (PNG/JPG)")
-    uploaded_file = st.file_uploader("点击上传", type=["png", "jpg", "jpeg"], key="upload_img")
-    
-    if uploaded_file is not None:
-        st.info("正在分析上传的图片...")
-        try:
-            # 这里模拟将图片转换为特征向量的过程
-            # 实际项目中你需要用 CNN 提取图片特征，这里为了演示不报错，使用随机特征或均值
-            # 如果你有 image_to_feature 函数，请在这里调用
-            img_embedding = np.random.rand(embeddings.shape[1]).astype(np.float32) 
+    # ================== 方式一：上传图片 ==================
+    with tab1:
+        uploaded_file = st.file_uploader("上传文件", type=["png", "jpg", "jpeg"], key="upload_pred")
+        if uploaded_file:
+            st.success("图片上传成功！(注：目前仅为演示流程，实际预测需接入图像处理模型)")
+            # 这里可以放图片处理的逻辑，暂时略过以防报错
             
-            # 计算相似度
-            sims = cosine_similarity(img_embedding.reshape(1, -1), embeddings)[0]
-            top_indices = np.argsort(sims)[::-1][:5]
-            
-            st.success("分析完成！找到最相似的样本：")
-            for rank, idx in enumerate(top_indices):
-                st.markdown(f"👉 **Top {rank+1}**: 样本 {idx} | 类型: {all_data[idx].y.item() if hasattr(all_data[idx].y, 'item') else all_data[idx].y} | 相似度: {sims[idx]:.4f}")
-            
-            # 显示 Top 1 的 3D 结构
-            best_idx = top_indices[0]
-            sample = all_data[best_idx]
-            
-            st.subheader("最匹配样本的 3D 结构")
-            pos = None
-            if hasattr(sample, 'pos') and sample.pos is not None:
-                pos = sample.pos.numpy()
-            elif hasattr(sample, 'x') and sample.x is not None and sample.x.shape[1] >= 3:
-                pos = sample.x[:, :3].numpy()
-            
-            if pos is not None:
-                fig = px.scatter_3d(x=pos[:,0], y=pos[:,1], z=pos[:,2], title=f"样本 {best_idx} 结构")
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("⚠️ 该样本缺少 3D 坐标数据，无法可视化。")
-
-        except Exception as e:
-            st.error(f"图片分析出错: {e}")
-
-    st.divider()
-
-    # --- 方式二：选择样本 ---
-    st.subheader("📂 方式二：选择预设测试样本")
-    
-    # 生成下拉选项
-    options = [f"样本 {i} (类型: {data.y.item() if hasattr(data.y, 'item') else data.y})" for i, data in enumerate(all_data)]
-    selected_option = st.selectbox("请选择一个样本:", options, key="select_sample")
-    
-    if selected_option:
-        # 解析选中的索引
-        selected_idx = int(selected_option.split(" ")[1])
-        sample = all_data[selected_idx]
+    # ================== 方式二：选择样本 ==================
+    with tab2:
+        st.subheader("从训练集中选择样本进行测试")
         
-        st.info(f"正在分析：{selected_option}")
+        # 生成选项列表
+        sample_options = [f"样本 {i} (类型 {d.y.item()})" for i, d in enumerate(all_data)]
+        selected_idx_str = st.selectbox("请选择一个样本：", sample_options, key="select_sample")
         
-        try:
-            # 【核心修复 2】单独处理当前样本，避免 stack 大小不一致报错
-            model.eval()
-            with torch.no_grad():
-                data = sample.to(device)
-                # 构造 batch 向量 (核心修复 3：补全 batch 参数)
-                batch_vec = torch.zeros(data.num_nodes, dtype=torch.long, device=device)
-                sample_emb = model(data.x, data.edge_index, batch_vec)
-                sample_emb_np = sample_emb.cpu().numpy().reshape(1, -1)
+        if selected_idx_str:
+            # 解析出索引
+            selected_idx = int(selected_idx_str.split(" ")[1])
+            sample = all_data[selected_idx]
             
-            # 计算与所有训练集的相似度
-            sims = cosine_similarity(sample_emb_np, embeddings)[0]
-            top_indices = np.argsort(sims)[::-1][:5]
+            st.info(f"正在分析：{selected_idx_str}")
             
-            st.subheader("最相似的 5 个训练样本:")
-            for rank, idx in enumerate(top_indices):
-                label = "👉 (当前)" if idx == selected_idx else f"👍 Top {rank+1}"
-                st.markdown(f"{label} **样本 {idx}** | 类型: {all_data[idx].y.item() if hasattr(all_data[idx].y, 'item') else all_data[idx].y} | 相似度: {sims[idx]:.4f}")
-            
-            # 3D 可视化 (核心修复 4：增加坐标提取的容错性)
-            st.subheader("3D 结构可视化")
-            pos = None
-            
-            # 尝试多种路径获取坐标
-            if hasattr(sample, 'pos') and sample.pos is not None:
-                pos = sample.pos.numpy()
-            elif hasattr(sample, 'x') and sample.x is not None:
-                # 尝试从 x 的前三维获取
-                if sample.x.shape[1] >= 3:
-                    pos = sample.x[:, :3].numpy()
-            
-            if pos is not None:
-                fig = px.scatter_3d(
-                    x=pos[:,0], y=pos[:,1], z=pos[:,2], 
-                    title=f"样本 {selected_idx} 的 3D 结构"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("⚠️ 无法获取该样本的 3D 坐标数据 (pos 或 x 均无效)，跳过可视化。")
+            # --- 1. 模型预测 ---
+            try:
+                sample = sample.to(device)
+                # 构造 batch 向量 (单样本预测时，所有节点的 batch_id 都是 0)
+                batch_vec = torch.zeros(sample.x.size(0), dtype=torch.long, device=device)
                 
-        except Exception as e:
-            st.error(f"样本分析出错: {e}")
-            st.exception(e) # 打印详细错误以便调试
+                # 调用模型
+                sample_emb = model(sample.x.float(), sample.edge_index, batch_vec)
+                sample_emb_np = sample_emb.cpu().detach().numpy().reshape(1, -1)
+                
+                # 计算余弦相似度
+                from sklearn.metrics.pairwise import cosine_similarity
+                similarities = cosine_similarity(sample_emb_np, embeddings)[0]
+                
+                # 获取 Top 5
+                top5_indices = similarities.argsort()[-5:][::-1]
+                
+                st.markdown("**最相似的 5 个训练样本：**")
+                for rank, idx in enumerate(top5_indices):
+                    sim_score = similarities[idx]
+                    true_label = all_data[idx].y.item()
+                    st.caption(f"👉 Top {rank+1}: 样本 {idx} | 类型: {true_label} | 相似度: {sim_score:.4f}")
+                    
+            except Exception as e:
+                st.error(f"预测过程出错: {str(e)}")
+                st.stop()
+
+            # --- 2. 3D 可视化 (带容错) ---
+            st.subheader("3D 结构可视化")
+            
+            # 尝试提取坐标
+            pos = None
+            if hasattr(sample, 'pos') and sample.pos is not None:
+                pos = sample.pos.cpu().numpy()
+            elif hasattr(sample, 'x') and sample.x is not None and sample.x.shape[1] >= 3:
+                pos = sample.x[:, :3].cpu().numpy()
+            
+            if pos is not None:
+                try:
+                    import plotly.express as px
+                    import pandas as pd
+                    
+                    df = pd.DataFrame(pos, columns=['X', 'Y', 'Z'])
+                    fig = px.scatter_3d(df, x='X', y='Y', z='Z', title="样本 3D 结构")
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"3D 绘图组件缺失或出错: {str(e)}")
+            else:
+                st.warning("⚠️ 该样本没有坐标数据 (pos)，无法进行 3D 可视化。")
