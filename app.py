@@ -437,3 +437,4 @@ elif page == "🔮 预测演示":
     - 通过最近邻投票法（Top-5 余弦相似度），{vote[pred_label]} 个邻居属于 **{type_names[pred_label]}**，预测置信度为 **{pred_confidence:.0%}**。
     - 图中 **红色大球** 代表你选择的样本，它在嵌入空间中落在 **{type_names[pred_label]}** 的聚集区域内。
     - 如果真实标签与预测一致，说明模型成功将该神经元分类到了正确的类型。
+     """)
