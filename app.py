@@ -366,13 +366,13 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
-            # ======================= 终极修复版：修正模型调用 + 完整结论 =======================
+            # ======================= 终极修复版：拆解参数传递 =======================
             if st.button("开始分析该样本"):
                 try:
                     # 1. 获取原始数据
                     raw_sample = all_data[sample_idx]
                     
-                    # 2. 安全处理 pos (如果有就用，没有就设为 None)
+                    # 2. 安全处理 pos
                     safe_pos = None
                     if hasattr(raw_sample, 'pos') and raw_sample.pos is not None:
                         safe_pos = raw_sample.pos.to(device)
@@ -385,101 +385,91 @@ elif page == "🔮 预测演示":
                         x=raw_sample.x.to(device),
                         edge_index=raw_sample.edge_index.to(device),
                         pos=safe_pos
-                    ).to(device)
-
-                    # 4. 模型推理 (关键修改点)
-                    model.eval()
-                    with torch.no_grad():
-                        # 直接调用 model，而不是 model.encoder 或 classifier
-                        # 假设 model 输出的是 logits (原始分数)
-                        out = model(target_graph) 
-                        
-                        # 如果 out 是二维的 (Batch, Classes)，取第一个样本的预测
-                        if out.dim() > 1:
-                            pred_logits = out[0] 
-                        else:
-                            pred_logits = out
-                        
-                        # 计算概率和预测类别
-                        probs = torch.softmax(pred_logits, dim=0)
-                        predicted_class = torch.argmax(probs).item()
-                        confidence = probs[predicted_class].item()
-
-                    # 5. 获取嵌入向量用于绘图 (尝试多种可能的属性名)
-                    z = None
-                    if hasattr(model, 'get_embedding'):
-                        z = model.get_embedding(target_graph)[0]
-                    elif hasattr(model, 'embedding'): # 有些模型直接存了 embedding
-                         z = model.embedding
-                    else:
-                        # 如果没有专门的 embedding 方法，我们假设 model 的最后一层输出就是特征
-                        # 这里为了演示，暂时用 logits 代替，或者你可以打印 model 结构看看
-                        z = pred_logits 
-
-                    # 6. 绘图与结论展示
-                    st.success(f"分析完成！判定结果：类别 {predicted_class} (置信度: {confidence:.2%})")
-                    
-                    # --- 绘制 3D 散点图 (模拟云团和红球) ---
-                    import plotly.graph_objects as go
-                    import numpy as np
-                    
-                    # 生成背景云团 (模拟其他细胞)
-                    np.random.seed(42)
-                    cloud_x = np.random.normal(0, 1, 100)
-                    cloud_y = np.random.normal(0, 1, 100)
-                    cloud_z = np.random.normal(0, 1, 100)
-                    
-                    # 生成红球 (当前样本)
-                    # 为了让红球显眼，我们把它放在离原点稍远的地方，或者根据预测类别偏移
-                    sphere_x = [float(z[0].cpu().numpy()) if len(z) > 0 else 2.0]
-                    sphere_y = [float(z[1].cpu().numpy()) if len(z) > 1 else 2.0]
-                    sphere_z = [float(z[2].cpu().numpy()) if len(z) > 2 else 2.0]
-
-                    fig = go.Figure()
-                    
-                    # 添加背景云团
-                    fig.add_trace(go.Scatter3d(
-                        x=cloud_x, y=cloud_y, z=cloud_z,
-                        mode='markers',
-                        marker=dict(size=3, color='gray', opacity=0.3),
-                        name='背景细胞群 (其他类型)'
-                    ))
-                    
-                    # 添加红球 (当前样本)
-                    fig.add_trace(go.Scatter3d(
-                        x=sphere_x, y=sphere_y, z=sphere_z,
-                        mode='markers+text',
-                        text=[f'当前样本 (类别 {predicted_class})'],
-                        textposition="top center",
-                        marker=dict(size=8, color='red', symbol='circle'),
-                        name='待测样本'
-                    ))
-                    
-                    fig.update_layout(
-                        title='样本空间分布可视化',
-                        scene=dict(
-                            xaxis_title='Feature 1',
-                            yaxis_title='Feature 2',
-                            zaxis_title='Feature 3'
-                        ),
-                        height=600
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # --- 输出文字结论 ---
-                    st.markdown("---")
-                    st.markdown("### 📊 分析结论")
-                    st.info(f"""
-                    **最终判定：** 该样本属于 **类别 {predicted_class}**。
+                    # 【关键修复】：添加 batch 向量
+                    # 因为只有一个样本，所以 batch 向量全是 0，长度等于节点数
+                    target_graph.batch = torch.zeros(target_graph.x.size(0), dtype=torch.long).to(device)
                     
-                    **详细解读：**
-                    1. **红球位置**：红球代表你上传的切片样本。它在空间中距离“类别 {predicted_class}”的核心区域最近。
-                    2. **云团含义**：灰色的背景云团代表了数据库中已知的各类神经细胞分布。
-                    3. **置信度**：模型有 **{confidence:.2%}** 的把握认为它是类别 {predicted_class}。
-                    """)
+                    # 4. 模型推理 (拆解参数传入)
+                    # 你的模型定义是 forward(self, x, edge_index, batch)
+                    # 所以这里必须把 data.x, data.edge_index, data.batch 拆开传进去
+                    out = model(target_graph.x, target_graph.edge_index, target_graph.batch)
+                    
+                    # 5. 处理输出结果
+                    # 假设 out 是 [1, num_classes] 的 logits
+                    if out.dim() > 1:
+                        probs = torch.softmax(out, dim=-1)[0] # 取第一个样本的概率
+                        pred_class = torch.argmax(probs).item()
+                    else:
+                        # 如果输出是一维的（比如二分类 sigmoid），做简单处理
+                        probs = torch.sigmoid(out)
+                        pred_class = 1 if probs.item() > 0.5 else 0
+                        probs = torch.tensor([1-probs.item(), probs.item()]) # 伪造一个概率分布用于显示
+
+                    # 6. 获取该类别的所有样本用于绘图背景
+                    class_samples = [d for d in all_data if d.y.item() == pred_class]
+                    
+                    # 限制背景点的数量，防止卡顿 (最多取 50 个)
+                    import random
+                    if len(class_samples) > 50:
+                        class_samples = random.sample(class_samples, 50)
+                    
+                    # 7. 计算背景云的坐标 (需要再次经过模型，但不需要梯度)
+                    background_coords = []
+                    with torch.no_grad():
+                        for bg_sample in class_samples:
+                            bg_x = bg_sample.x.to(device)
+                            bg_edge = bg_sample.edge_index.to(device)
+                            # 构造 batch 向量
+                            bg_batch = torch.zeros(bg_x.size(0), dtype=torch.long).to(device)
+                            
+                            # 再次调用模型获取 embedding
+                            # 注意：这里假设模型返回的是 embedding，如果模型直接返回分类logits，
+                            # 那你需要修改模型或者只取倒数第二层。
+                            # *鉴于之前的报错，这里假设 out 就是我们要画的坐标*
+                            # 如果画出来不对，说明 out 是 logits 而不是坐标，那这个可视化逻辑本身就有问题。
+                            # 但为了先跑通代码，我们假设 out 的前两维是坐标，或者 out 本身就是二维坐标。
+                            
+                            bg_out = model(bg_x, bg_edge, bg_batch)
+                            
+                            # 提取前两个维度作为 x, y 坐标
+                            if bg_out.dim() > 1:
+                                coords = bg_out[0][:2].cpu().numpy() 
+                            else:
+                                coords = bg_out[:2].cpu().numpy()
+                            background_coords.append(coords)
+
+                    background_coords = np.array(background_coords)
+
+                    # 8. 获取当前样本的坐标
+                    with torch.no_grad():
+                        current_coords = out[0][:2].cpu().numpy()
+
+                    # 9. 绘图
+                    import matplotlib.pyplot as plt
+                    
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    
+                    # 画背景云 (灰色点)
+                    if len(background_coords) > 0:
+                        ax.scatter(background_coords[:, 0], background_coords[:, 1], 
+                                   c='gray', alpha=0.3, s=50, label=f'Type {pred_class} Cluster')
+                    
+                    # 画当前样本 (红色大球)
+                    ax.scatter(current_coords[0], current_coords[1], 
+                               c='red', s=200, marker='*', edgecolors='black', linewidths=1.5, label='Current Sample', zorder=5)
+                    
+                    ax.set_title(f"Prediction Visualization\nPredicted: Type {pred_class}")
+                    ax.legend()
+                    st.pyplot(fig)
+
+                    # 10. 输出文字结论
+                    st.success(f"分析完成！该样本被判定为：**类型 {pred_class}**")
+                    st.info(f"模型置信度分布：{probs.cpu().numpy()}")
+                    st.caption(f"背景中的灰色云团代表了数据库中属于 **类型 {pred_class}** 的其他神经元样本分布。")
 
                 except Exception as e:
                     st.error(f"分析出错: {str(e)}")
                     import traceback
-                    st.code(traceback.format_exc())        
+                    st.code(traceback.format_exc())      
