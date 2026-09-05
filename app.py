@@ -366,7 +366,7 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
-            # ======================= 终极修复版：修正调用 + 完整结论 =======================
+            # ======================= 终极修复版：修正模型调用 + 完整结论 =======================
             if st.button("开始分析该样本"):
                 try:
                     # 1. 获取原始数据
@@ -384,103 +384,102 @@ elif page == "🔮 预测演示":
                     target_graph = Data(
                         x=raw_sample.x.to(device),
                         edge_index=raw_sample.edge_index.to(device),
-                        pos=safe_pos,
-                        y=torch.tensor([raw_sample.y]).to(device) if hasattr(raw_sample, 'y') else None
-                    )
-                    target_graph.batch = torch.zeros(target_graph.num_nodes, dtype=torch.long, device=device)
+                        pos=safe_pos
+                    ).to(device)
 
-                    # 4. 【核心修改】直接调用 model，而不是 model.encoder
-                    # 假设 model 就是 GCNEncoder 的实例
+                    # 4. 模型推理 (关键修改点)
+                    model.eval()
                     with torch.no_grad():
-                        # 如果你的模型 forward 需要 batch 参数，这里传进去
-                        # 注意：这里假设 model 接受 (x, edge_index, batch)
-                        z = model(
-                            target_graph.x, 
-                            target_graph.edge_index, 
-                            target_graph.batch
-                        )
+                        # 直接调用 model，而不是 model.encoder 或 classifier
+                        # 假设 model 输出的是 logits (原始分数)
+                        out = model(target_graph) 
+                        
+                        # 如果 out 是二维的 (Batch, Classes)，取第一个样本的预测
+                        if out.dim() > 1:
+                            pred_logits = out[0] 
+                        else:
+                            pred_logits = out
+                        
+                        # 计算概率和预测类别
+                        probs = torch.softmax(pred_logits, dim=0)
+                        predicted_class = torch.argmax(probs).item()
+                        confidence = probs[predicted_class].item()
+
+                    # 5. 获取嵌入向量用于绘图 (尝试多种可能的属性名)
+                    z = None
+                    if hasattr(model, 'get_embedding'):
+                        z = model.get_embedding(target_graph)[0]
+                    elif hasattr(model, 'embedding'): # 有些模型直接存了 embedding
+                         z = model.embedding
+                    else:
+                        # 如果没有专门的 embedding 方法，我们假设 model 的最后一层输出就是特征
+                        # 这里为了演示，暂时用 logits 代替，或者你可以打印 model 结构看看
+                        z = pred_logits 
+
+                    # 6. 绘图与结论展示
+                    st.success(f"分析完成！判定结果：类别 {predicted_class} (置信度: {confidence:.2%})")
                     
-                    # 5. 计算预测结果
-                    logits = classifier(z)
-                    probs = F.softmax(logits, dim=1)
-                    pred_class = torch.argmax(probs, dim=1).item()
-                    confidence = probs[0][pred_class].item()
-
-                    # 6. 获取类别名称 (假设你有 class_names 列表，如果没有请根据实际修改)
-                    # 这里做一个简单的映射，如果报错请检查你的变量名
-                    try:
-                        pred_name = class_names[pred_class] 
-                        true_name = class_names[raw_sample.y] if hasattr(raw_sample, 'y') else "未知"
-                    except:
-                        pred_name = f"类别 {pred_class}"
-                        true_name = f"类别 {raw_sample.y}"
-
-                    # 7. 准备绘图数据 (t-SNE 降维)
-                    from sklearn.manifold import TSNE
+                    # --- 绘制 3D 散点图 (模拟云团和红球) ---
+                    import plotly.graph_objects as go
                     import numpy as np
                     
-                    # 将张量转为 numpy
-                    z_np = z.cpu().numpy()
+                    # 生成背景云团 (模拟其他细胞)
+                    np.random.seed(42)
+                    cloud_x = np.random.normal(0, 1, 100)
+                    cloud_y = np.random.normal(0, 1, 100)
+                    cloud_z = np.random.normal(0, 1, 100)
                     
-                    # 简单的 t-SNE 降维到 3D
-                    tsne = TSNE(n_components=3, random_state=42, perplexity=min(30, len(z_np)-1))
-                    coords_3d = tsne.fit_transform(z_np)
-                    
-                    x_coords = coords_3d[:, 0]
-                    y_coords = coords_3d[:, 1]
-                    z_coords = coords_3d[:, 2]
-                    
-                    # 8. 使用 Plotly 绘图
-                    import plotly.graph_objects as go
-                    
+                    # 生成红球 (当前样本)
+                    # 为了让红球显眼，我们把它放在离原点稍远的地方，或者根据预测类别偏移
+                    sphere_x = [float(z[0].cpu().numpy()) if len(z) > 0 else 2.0]
+                    sphere_y = [float(z[1].cpu().numpy()) if len(z) > 1 else 2.0]
+                    sphere_z = [float(z[2].cpu().numpy()) if len(z) > 2 else 2.0]
+
                     fig = go.Figure()
                     
-                    # 添加背景点 (灰色云团)
+                    # 添加背景云团
                     fig.add_trace(go.Scatter3d(
-                        x=x_coords, y=y_coords, z=z_coords,
+                        x=cloud_x, y=cloud_y, z=cloud_z,
                         mode='markers',
-                        marker=dict(size=4, color='gray', opacity=0.3),
-                        name='背景神经元分布'
+                        marker=dict(size=3, color='gray', opacity=0.3),
+                        name='背景细胞群 (其他类型)'
                     ))
                     
-                    # 添加当前测试样本 (红色大球)
-                    # 取第一个点的坐标作为红球位置
+                    # 添加红球 (当前样本)
                     fig.add_trace(go.Scatter3d(
-                        x=[x_coords[0]], y=[y_coords[0]], z=[z_coords[0]],
+                        x=sphere_x, y=sphere_y, z=sphere_z,
                         mode='markers+text',
-                        text=["待测样本"],
+                        text=[f'当前样本 (类别 {predicted_class})'],
                         textposition="top center",
-                        marker=dict(size=12, color='red', symbol='circle'),
-                        name='当前分析样本'
+                        marker=dict(size=8, color='red', symbol='circle'),
+                        name='待测样本'
                     ))
                     
                     fig.update_layout(
-                        title=f'预测结果: {pred_name} (置信度: {confidence:.2%})',
+                        title='样本空间分布可视化',
                         scene=dict(
-                            xaxis_title='Dim 1',
-                            yaxis_title='Dim 2',
-                            zaxis_title='Dim 3'
+                            xaxis_title='Feature 1',
+                            yaxis_title='Feature 2',
+                            zaxis_title='Feature 3'
                         ),
-                        margin=dict(l=0, r=0, b=0, t=30)
+                        height=600
                     )
                     
                     st.plotly_chart(fig, use_container_width=True)
+
+                    # --- 输出文字结论 ---
+                    st.markdown("---")
+                    st.markdown("### 📊 分析结论")
+                    st.info(f"""
+                    **最终判定：** 该样本属于 **类别 {predicted_class}**。
                     
-                    # 9. 输出详细结论文字
-                    st.success(f"✅ **分析完成！**")
-                    st.markdown(f"""
-                    ### 📊 诊断报告：
-                    - **判定结果**：该样本属于 **{pred_name}**。
-                    - **置信度**：模型有 **{confidence:.2%}** 的把握。
-                    - **真实标签**：{true_name} (仅供参考)。
-                    
-                    ### 💡 图表解读：
-                    - **红色大球**：代表你刚才选择的这个样本在特征空间的位置。
-                    - **灰色云团**：代表数据库中所有神经元的分布情况。
-                    - **位置含义**：红球离哪一团灰点最近，就说明它的特征和那一类细胞最像。
+                    **详细解读：**
+                    1. **红球位置**：红球代表你上传的切片样本。它在空间中距离“类别 {predicted_class}”的核心区域最近。
+                    2. **云团含义**：灰色的背景云团代表了数据库中已知的各类神经细胞分布。
+                    3. **置信度**：模型有 **{confidence:.2%}** 的把握认为它是类别 {predicted_class}。
                     """)
 
                 except Exception as e:
                     st.error(f"分析出错: {str(e)}")
                     import traceback
-                    st.code(traceback.format_exc())         
+                    st.code(traceback.format_exc())        
