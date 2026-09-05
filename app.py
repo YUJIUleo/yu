@@ -263,6 +263,14 @@ elif page == "🔮 预测演示":
         st.write(f"**提取的3维特征：** 面积占比 `{area:.3f}` | 边缘复杂度 `{fractal_dim:.3f}` | 偏心率 `{eccentricity:.3f}`")
         
         st.write("**🏆 最相似的 5 个训练样本：**")
+        with torch.no_grad():
+                emb = model(sample.x, sample.edge_index, torch.zeros(sample.num_nodes, dtype=torch.long))
+                emb = emb.squeeze()
+            
+            # 找最近邻
+        from sklearn.metrics.pairwise import cosine_similarity
+        sims = cosine_similarity(emb.numpy().reshape(1, -1), embeddings)[0]
+        top5_idx = np.argsort(sims)[-5:][::-1]
         for i, idx in enumerate(top5_idx):
             sim_val = sims[idx] * 100
             true_type = type_names[labels[idx]]
@@ -277,14 +285,7 @@ elif page == "🔮 预测演示":
     sample = all_data[sample_idx]
     
     # 模型预测
-    with torch.no_grad():
-        emb = model(sample.x, sample.edge_index, torch.zeros(sample.num_nodes, dtype=torch.long))
-        emb = emb.squeeze()
-    
-    # 找最近邻
-    from sklearn.metrics.pairwise import cosine_similarity
-    sims = cosine_similarity(emb.numpy().reshape(1, -1), embeddings)[0]
-    top5_idx = np.argsort(sims)[-5:][::-1]
+  
     
     true_label = labels[sample_idx]
     
