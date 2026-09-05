@@ -1,8 +1,0 @@
-streamlit
-torch
-torch-geometric
-numpy
-opencv-python-headless
-scikit-learn
-matplotlib
-pillow
