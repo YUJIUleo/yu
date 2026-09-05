@@ -397,46 +397,68 @@ elif page == "🔮 预测演示":
                     st.latex(f"[ {vec_str} ]")
 
                     # --- 3D 可视化 (带背景版) ---
-                    st.markdown("### 🌌 空间位置分布")
-                    
-                    import plotly.graph_objects as go
-                    import numpy as np
+                                 # ======================= 3D 可视化 (带背景参照) =======================
+                st.markdown("### 🌌 空间位置分布")
+                
+                # 1. 准备画布
+                fig = go.Figure()
+                
+                # 2. 【新增】绘制背景：所有样本的分布 (灰色小点)
+                # 为了不卡顿，我们只取前3维
+                bg_x, bg_y, bg_z = [], [], []
+                bg_labels = [] # 如果你想按颜色区分类型，可以存这个
+                
+                # 遍历所有数据提取坐标
+                for g in all_data:
+                    # 假设 g.x 是节点特征，我们取第一行或者均值作为代表
+                    # 如果你的样本本身就是单节点图，直接用 g.x[0]
+                    pos = g.x[0].cpu().numpy() 
+                    bg_x.append(pos[0])
+                    bg_y.append(pos[1])
+                    bg_z.append(pos[2])
 
-                    # 准备背景数据 (所有训练集样本)
-                    bg_x, bg_y, bg_z = [], [], []
-                    bg_labels = []
-                    
-                    # 简单处理：取每个样本的第一个节点坐标作为代表
-                    for g in all_data:
-                        pos = g.x.cpu().numpy() 
-                        if len(pos) > 0:
-                            # 假设你的模型输出维度是固定的，这里简化处理取前3维
-                            # 如果 all_data 还没跑过模型，这里可能需要先跑一遍或者用预存特征
-                            # *注意：如果 all_data 只是原始图数据，这里画图可能没意义，除非你有预存的 embedding*
-                            # 这里假设我们要画的是“原始特征”或者你之前算好的“全局嵌入”
-                            # 为了演示，这里暂时只画当前点，或者你需要提供所有点的 embedding
-                            pass 
+                # 添加背景散点 trace
+                fig.add_trace(go.Scatter3d(
+                    x=bg_x, y=bg_y, z=bg_z,
+                    mode='markers',
+                    marker=dict(
+                        size=2,          # 背景点要小
+                        color='gray',    # 灰色
+                        opacity=0.1      # 透明度低一点，形成云雾感
+                    ),
+                    name='所有样本背景'
+                ))
 
-                    # 【临时方案】：既然 all_data 可能没 embedding，我们先只画这个红点，
-                    # 等你确认逻辑通了，我们再想办法把背景加进去（否则容易再次内存溢出）
-                    
-                    fig = go.Figure(data=[go.Scatter3d(
-                        x=[single_embedding[0][0]],
-                        y=[single_embedding[0][1]],
-                        z=[single_embedding[0][2]],
-                        mode='markers+text',
-                        marker=dict(size=10, color='red'),
-                        text=[f"Sample {sample_idx}"],
-                        textposition="top center"
-                    )])
-                    
-                    fig.update_layout(scene=dict(
+                # 3. 【原有】绘制前景：当前选中的样本 (红色大点)
+                # 使用之前算好的 single_embedding
+                target_pos = single_embedding 
+                
+                fig.add_trace(go.Scatter3d(
+                    x=[target_pos[0]], 
+                    y=[target_pos[1]], 
+                    z=[target_pos[2]],
+                    mode='markers+text',
+                    text=[f"样本 {sample_idx}"], # 显示文字标签
+                    textposition="top center",
+                    marker=dict(
+                        size=8,          # 前景点要大
+                        color='red',     # 红色醒目
+                        opacity=1.0,
+                        symbol='circle'
+                    ),
+                    name='当前样本'
+                ))
+
+                # 4. 更新布局
+                fig.update_layout(
+                    scene=dict(
                         xaxis_title='Dim 1',
                         yaxis_title='Dim 2',
-                        zaxis_title='Dim 3'
-                    ))
-                    
-                    st.plotly_chart(fig, use_container_width=True)
+                        zaxis_title='Dim 3',
+                        aspectmode='data' # 保持比例真实
+                    ),
+                    margin=dict(l=0, r=0, b=0, t=30),
+                    height=600 # 图稍微大一点
+                )
 
-                except Exception as e:
-                    st.error(f"出错了: {e}")
+                st.plotly_chart(fig, use_container_width=True)
