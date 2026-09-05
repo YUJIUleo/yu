@@ -274,36 +274,16 @@ elif page == "🔮 预测演示":
         for i, idx in enumerate(top5_idx):
             sim_val = sims[idx] * 100
             true_type = type_names[labels[idx]]
-try:
-    # 1. 尝试把 sim_val 转成 numpy 数组并展平，取出第一个数值
-    # 这样无论是 [95], [[95]], 还是 95，都能变成单独的数字
-    raw_num = float(np.array(sim_val).flatten()[0])
-    
-    # 2. 归一化处理：如果数值大于1（比如是百分比95），就除以100
-    # 如果数值本身就是 0.95，除以100会变成0.0095，所以加个判断
-    if raw_num > 1.0:
-        progress_value = raw_num / 100.0
-    else:
-        progress_value = raw_num
+            st.progress(sim_val / 100)
+            st.caption(f"第{i+1}名：样本#{idx} | 真实类型：**{true_type}** | 相似度：**{sim_val:.1f}%**")
         
-    # 3. 安全钳位：强制限制在 0.0 到 1.0 之间，防止溢出报错
-    progress_value = max(0.0, min(1.0, progress_value))
-    
-    # 4. 更新进度条
-    st.progress(progress_value)
-
-except Exception as e:
-    # 万一真的彻底坏了，至少给个满进度让程序跑完，并在旁边报个错
-    st.progress(1.0)
-    st.error(f"进度条数据异常: {e}")
-
         # === 嵌入空间可视化（上传样本） ===
-    st.subheader("📊 嵌入空间位置")
+        st.subheader("📊 嵌入空间位置")
         
-    fig = go.Figure()
+        fig = go.Figure()
         
         # 画背景云团（所有训练数据，按类型着色）
-    for label_id, name in type_names.items():
+        for label_id, name in type_names.items():
             mask = labels == label_id
             fig.add_trace(go.Scatter3d(
                 x=umap_3d[mask, 0],
@@ -315,8 +295,8 @@ except Exception as e:
             ))
         
         # 画当前上传样本（红色大球）— 用最近邻的位置作为参考
-    nearest_pos = umap_3d[top5_idx[0]]
-    fig.add_trace(go.Scatter3d(
+        nearest_pos = umap_3d[top5_idx[0]]
+        fig.add_trace(go.Scatter3d(
             x=[nearest_pos[0]],
             y=[nearest_pos[1]],
             z=[nearest_pos[2]],
@@ -327,14 +307,14 @@ except Exception as e:
             name='上传样本'
         ))
         
-    fig.update_layout(
+        fig.update_layout(
             scene=dict(xaxis_title='UMAP1', yaxis_title='UMAP2', zaxis_title='UMAP3'),
             height=600,
             title=f"嵌入空间可视化（预测：{type_names[pred_label]}，置信度：{pred_confidence:.0%}）"
         )
-    st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
         
-    st.markdown("---")
+        st.markdown("---")
 
     # ==================== 方式二：选择预设测试样本 ====================
     st.subheader("🗄️ 方式二：选择预设测试样本")
@@ -457,4 +437,3 @@ except Exception as e:
     - 通过最近邻投票法（Top-5 余弦相似度），{vote[pred_label]} 个邻居属于 **{type_names[pred_label]}**，预测置信度为 **{pred_confidence:.0%}**。
     - 图中 **红色大球** 代表你选择的样本，它在嵌入空间中落在 **{type_names[pred_label]}** 的聚集区域内。
     - 如果真实标签与预测一致，说明模型成功将该神经元分类到了正确的类型。
-    """)
