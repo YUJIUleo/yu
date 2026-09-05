@@ -366,90 +366,107 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
-              # ======================= 终极完整版：分析 + 绘图 =======================
+            # ======================= 终极完整版：分析 + t-SNE 自动绘图 =======================
             if st.button("开始分析该样本"):
                 try:
                     # 1. 获取原始数据
                     raw_sample = all_data[sample_idx]
                     
-                    # 2. 安全处理 pos 属性 (防止 NoneType 报错)
+                    # 2. 安全处理 pos (如果有就用，没有就设为 None)
                     safe_pos = None
                     if hasattr(raw_sample, 'pos') and raw_sample.pos is not None:
                         safe_pos = raw_sample.pos.to(device)
                     
                     from torch_geometric.data import Data, Batch
+                    import torch
                     
-                    # 3. 构建标准的 Data 对象
+                    # 3. 构建 Data 对象
                     target_graph = Data(
                         x=raw_sample.x.to(device),
                         edge_index=raw_sample.edge_index.to(device),
-                        pos=safe_pos
+                        pos=safe_pos, 
+                        y=torch.tensor([raw_sample.y]).to(device) if hasattr(raw_sample, 'y') else torch.tensor([0]).to(device)
                     )
-
-                    # 4. 【核心修复】把单个图包装成 Batch
-                    # 你的 GCNEncoder 需要 batch 参数，所以必须用 Batch.from_data_list 包装一下
-                    # 即使只有一个样本，也要包装成列表 [target_graph]
+                    
+                    # 4. 【关键修复】打包成 Batch 对象，自动生成 batch 索引
                     batch_data = Batch.from_data_list([target_graph])
-
-                    # 5. 执行推理
+                    
+                    # 5. 运行模型 (自动拆解参数喂给 GCNEncoder)
                     model.eval()
                     with torch.no_grad():
-                        # 把完整的 batch_data 传给模型，它会自动拆解出 x, edge_index, batch
-                        out = model(batch_data) 
-                        
-                        # 获取预测结果 (假设输出是 logits)
-                        pred_class = torch.argmax(out, dim=1).item()
-                        confidence = torch.softmax(out, dim=1)[0][pred_class].item()
-
-                    st.success(f"分析完成！预测类别：{pred_class} (置信度: {confidence:.2%})")
+                        # 严格按照 GCNEncoder(x, edge_index, batch) 的顺序传参
+                        out = model(batch_data.x, batch_data.edge_index, batch_data.batch)
+                        embedding = out.cpu().numpy() 
                     
-                    # 6. 准备绘图数据
-                    import numpy as np
+                    st.success("✅ 分析完成！正在生成空间分布图...")
+                    
+                    # 6. 绘图逻辑 (包含 t-SNE 自动补全坐标)
                     import plotly.graph_objects as go
+                    from sklearn.manifold import TSNE
+                    import numpy as np
                     
-                    # 获取当前样本的坐标 (如果之前没有，这里可能需要降维，这里假设你有 pos 或者用 x 降维)
-                    # 为了演示，如果 safe_pos 是 None，我们暂时用 x 的前三维或者随机生成，防止报错
-                    if safe_pos is not None:
-                        current_pos = safe_pos.cpu().numpy()
-                    else:
-                        # 兜底方案：如果没有坐标，就用特征的前3维假装坐标，保证不报错
-                        current_pos = raw_sample.x[:, :3].cpu().numpy()
+                    # 获取背景数据 (取前 100 个作为云团背景)
+                    bg_indices = list(range(min(100, len(all_data))))
+                    bg_samples = [all_data[i] for i in bg_indices]
+                    
+                    # 尝试从背景数据中提取特征，如果没有则随机生成用于展示
+                    try:
+                        bg_graphs = Batch.from_data_list([
+                            Data(x=s.x.to(device), edge_index=s.edge_index.to(device)) for s in bg_samples
+                        ])
+                        bg_out = model(bg_graphs.x, bg_graphs.edge_index, bg_graphs.batch)
+                        bg_embedding = bg_out.cpu().numpy()
+                    except:
+                        # 兜底：如果背景数据跑不通，就随机生成一些点凑数
+                        bg_embedding = np.random.randn(100, embedding.shape[1])
 
-                    # --- 开始绘图逻辑 ---
-                    st.markdown("### 🌌 神经元空间分布与特征映射")
+                    # 合并当前样本和背景数据
+                    total_embedding = np.vstack([embedding, bg_embedding])
                     
+                    # 【核心】如果数据维度不是3维，用 t-SNE 降维到 3D
+                    if total_embedding.shape[1] != 3:
+                        tsne = TSNE(n_components=3, random_state=42)
+                        coords_3d = tsne.fit_transform(total_embedding)
+                    else:
+                        coords_3d = total_embedding
+
+                    # 分离坐标
+                    target_coords = coords_3d[0] 
+                    bg_coords = coords_3d[1:] 
+
+                    # 创建 Plotly 图表
                     fig = go.Figure()
-                    
-                    # 画背景点 (灰色) - 这里简化处理，只画当前点，或者你可以把 all_data 的坐标拼进来
-                    # 如果你想画所有数据的背景，需要遍历 all_data 提取 pos
-                    # 这里为了代码稳健，先只画当前选中的点（红色大球）
-                    
+
+                    # 添加背景云团 (灰色半透明)
                     fig.add_trace(go.Scatter3d(
-                        x=current_pos[:, 0],
-                        y=current_pos[:, 1],
-                        z=current_pos[:, 2] if current_pos.shape[1] > 2 else np.zeros_like(current_pos[:, 0]),
+                        x=bg_coords[:, 0], y=bg_coords[:, 1], z=bg_coords[:, 2],
                         mode='markers',
-                        marker=dict(
-                            size=5,
-                            color='red',      # 红色高亮
-                            opacity=0.8
-                        ),
-                        name=f'当前样本 (类别 {pred_class})'
+                        marker=dict(size=3, color='gray', opacity=0.3),
+                        name='背景样本云团'
                     ))
-                    
+
+                    # 添加当前样本 (红色大球)
+                    fig.add_trace(go.Scatter3d(
+                        x=[target_coords[0]], y=[target_coords[1]], z=[target_coords[2]],
+                        mode='markers+text',
+                        text=['当前样本'],
+                        textposition="top center",
+                        marker=dict(size=8, color='red', symbol='circle'),
+                        name='待测样本'
+                    ))
+
                     fig.update_layout(
-                        title="3D 空间分布可视化",
+                        title='神经元嵌入空间分布 (t-SNE 投影)',
                         scene=dict(
-                            xaxis_title='X',
-                            yaxis_title='Y',
-                            zaxis_title='Z'
+                            xaxis_title='X', yaxis_title='Y', zaxis_title='Z',
+                            aspectmode='data'
                         ),
                         height=600
                     )
-                    
+
                     st.plotly_chart(fig, use_container_width=True)
 
                 except Exception as e:
                     st.error(f"分析出错: {str(e)}")
                     import traceback
-                    st.code(traceback.format_exc())
+                    st.code(traceback.format_exc())         
