@@ -262,21 +262,39 @@ elif page == "🔮 预测演示":
         st.success("✅ 预测分析完成！")
         st.write(f"**提取的3维特征：** 面积占比 `{area:.3f}` | 边缘复杂度 `{fractal_dim:.3f}` | 偏心率 `{eccentricity:.3f}`")
         
-        st.write("**🏆 最相似的 5 个训练样本：**")
-        with torch.no_grad():
-                emb = model(sample.x, sample.edge_index, torch.zeros(sample.num_nodes, dtype=torch.long))
-                emb = emb.squeeze()
-            
-            # 找最近邻
-        from sklearn.metrics.pairwise import cosine_similarity
-        sims = cosine_similarity(emb.numpy().reshape(1, -1), embeddings)[0]
-        top5_idx = np.argsort(sims)[-5:][::-1]
-        for i, idx in enumerate(top5_idx):
-            sim_val = sims[idx] * 100
-            true_type = type_names[labels[idx]]
-    st.caption(f"第{i+1}名：样本#{idx} | 真实类型：**{true_type}** | 相似度：**{sim_val:.1f}%**")
+           # --- 开始替换 ---
+    st.write("*** 🏆 最相似的 5 个训练样本: ***")
+
+    # 1. 先计算当前样本的嵌入向量 (Embedding)
+    with torch.no_grad():
+        # 注意：这里假设 sample 变量已经包含 .x 和 .edge_index
+        emb = model(sample.x, sample.edge_index, torch.zeros(sample.x.size(0), dtype=torch.long))
+        emb = emb.squeeze()
+
+    # 2. 计算与所有训练集样本的余弦相似度
+    from sklearn.metrics.pairwise import cosine_similarity
+    # emb 是 (D,), embeddings 是 (N, D) -> 结果 sims 是 (N,)
+    sims = cosine_similarity(emb.numpy().reshape(1, -1), embeddings)[0]
+
+    # 3. 获取相似度最高的 5 个索引 (从大到小排序)
+    top5_idx = np.argsort(sims)[-5:][::-1]
+
+    # 4. 循环展示结果
+    for rank, idx in enumerate(top5_idx):
+        # 【关键修复】：直接用 sims[idx] 获取原始相似度，不要乘以 100 除非你想显示百分比
+        # idx 是原始数据集的下标，sims 是完整的相似度数组，这样取是安全的
+        sim_val = sims[idx] * 100
         
+        # 获取真实标签名称
+        true_type = type_names[labels[idx]]
+        
+        # 打印每一行
+        st.caption(
+            f"第 {rank+1} 名: **样本#{idx}** | 真实类型: **{true_type}** | 相似度: **{sim_val:.1f}%**"
+        )
+
     st.markdown("---")
+    # --- 结束替换 ---
 
     st.subheader("🗄️ 方式二：选择预设测试样本")
     sample_options = {f"样本#{i} ({type_names[labels[i]]})": i for i in range(len(all_data))}
