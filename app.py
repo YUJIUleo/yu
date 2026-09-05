@@ -380,25 +380,67 @@ elif page == "🔮 预测演示":
                     
                     st.success(f"样本 {sample_idx} 分析完成！")
                     
-                    # 计算与训练集中其他样本的相似度 (余弦相似度)
-                    # 注意：这里需要用到之前算好的 all_embeddings，如果没有，现算会很慢
-                    # 这里做一个简化的演示：只展示该样本的特征值
-                    st.metric("嵌入向量前3维", f"{single_embedding[0][:3]}")
-                    
-                    # 简单的可视化
-                    import plotly.graph_objects as go
-                    fig = go.Figure(data=[go.Scatter3d(
-                        x=[single_embedding[0][0]], 
-                        y=[single_embedding[0][1]], 
-                        z=[single_embedding[0][2]],
-                        mode='markers+text',
-                        text=[f"Sample {sample_idx}"],
-                        marker=dict(size=10, color='red')
-                    )])
-                    fig.update_layout(title=f"样本 {sample_idx} 的独立空间位置", scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'))
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                except Exception as e:
-                    st.error(f"单样本分析失败: {str(e)}")
-        else:
-            st.warning("该类别下没有可用样本。")
+                            
+            # 显示向量数值
+            st.markdown("### 🧬 嵌入向量前3维")
+            vec_str = " ".join([f"{x:.6f}" for x in pred_embedding[0][:3]])
+            st.latex(f"[ {vec_str} ]")
+
+            # ======================= 3D 可视化 (带背景版) =======================
+            st.markdown("### 🌌 空间位置分布")
+            
+            # 1. 准备背景数据 (所有训练集)
+            # 假设 all_data 是一个列表，我们需要把所有图的节点坐标拼起来
+            # 注意：这里我们取所有数据的“平均中心”或者“第一个节点”来代表那个样本在空间的位置
+            # 如果你的 all_data 结构比较复杂，这里用最简单的方式：取每个样本的第一个节点的坐标作为代表
+            
+            bg_x, bg_y, bg_z = [], [], []
+            labels = []
+            
+            for i, g in enumerate(all_data):
+                # 取该样本的第一个节点坐标作为代表点 (或者你可以取所有节点的平均值)
+                if g.x.shape[0] > 0:
+                    bg_x.append(g.x[0][0].item())
+                    bg_y.append(g.x[0][1].item())
+                    bg_z.append(g.x[0][2].item())
+                    labels.append(g.y.item() if hasattr(g, 'y') else 0)
+
+            # 2. 准备前景数据 (当前选中的样本)
+            fg_x = [pred_embedding[0][0].item()]
+            fg_y = [pred_embedding[0][1].item()]
+            fg_z = [pred_embedding[0][2].item()]
+
+            # 3. 绘图
+            import plotly.graph_objects as go
+
+            fig = go.Figure()
+
+            # 添加背景散点 (灰色，小一点)
+            fig.add_trace(go.Scatter3d(
+                x=bg_x, y=bg_y, z=bg_z,
+                mode='markers',
+                marker=dict(size=3, color='gray', opacity=0.3),
+                name='训练集背景'
+            ))
+
+            # 添加前景散点 (红色，大一点)
+            fig.add_trace(go.Scatter3d(
+                x=fg_x, y=fg_y, z=fg_z,
+                mode='markers+text',
+                text=[f"样本 {sample_idx}"],
+                textposition="top center",
+                marker=dict(size=8, color='red', symbol='circle'),
+                name='当前预测样本'
+            ))
+
+            fig.update_layout(
+                scene=dict(
+                    xaxis_title='Dim 1',
+                    yaxis_title='Dim 2',
+                    zaxis_title='Dim 3'
+                ),
+                margin=dict(l=0, r=0, b=0, t=30),
+                height=600
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
