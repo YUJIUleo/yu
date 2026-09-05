@@ -366,90 +366,77 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
-            # ======================= 核心分析逻辑 (终极修复版) =======================
+            # ================= 完整的分析与绘图逻辑 =================
             if st.button("开始分析该样本"):
                 try:
-                    # 1. 获取选中的样本
+                    # 1. 获取数据并修复格式
                     raw_sample = all_data[sample_idx]
-                    
-                    # 2. 【数据清洗】确保数据完整，防止各种 AttributeError
                     from torch_geometric.data import Data
                     import torch
                     
-                    # 提取特征和边，如果原数据没有边，就创建一个空的
-                    x = raw_sample.x.to(device)
-                    edge_index = raw_sample.edge_index.to(device) if hasattr(raw_sample, 'edge_index') and raw_sample.edge_index is not None else torch.empty((2, 0), dtype=torch.long, device=device)
+                    # 强制重构 Data 对象，防止 GlobalStorage 报错
+                    target_graph = Data(
+                        x=raw_sample.x.to(device),
+                        edge_index=raw_sample.edge_index.to(device),
+                        pos=raw_sample.pos.to(device) if hasattr(raw_sample, 'pos') else None
+                    )
                     
-                    # 【关键修复】手动创建 batch 向量
-                    # 因为只有一个样本，所以所有节点的 batch ID 都是 0
-                    batch = torch.zeros(x.size(0), dtype=torch.long, device=device)
+                    # 2. 手动构建 batch 向量 (解决 missing arguments 报错)
+                    num_nodes = target_graph.x.size(0)
+                    batch_vec = torch.zeros(num_nodes, dtype=torch.long, device=device)
                     
-                    # 3. 【核心修复】按照模型要求的格式传参
-                    # 你的模型定义是 forward(self, x, edge_index, batch)，所以必须这样调
-                    model.eval()
-                    with torch.no_grad():
-                        out = model(x, edge_index, batch)
+                    # 3. 运行模型 (传入 model 要求的三个参数)
+                    out = model(target_graph.x, target_graph.edge_index, batch_vec)
                     
-                        st.success("分析完成！")
-                
-                st.markdown("### 🌌 神经元空间分布与特征映射")
-                
-                # 1. 准备当前选中样本的数据（红色高亮）
-                # 确保坐标在 CPU 上并转为 numpy 数组
-                current_pos = target_graph.pos.cpu().numpy()
-                
-                # 2. 准备背景数据（灰色云团）
-                # 我们把所有样本的坐标拼在一起，作为背景环境
-                import numpy as np
-                all_pos_list = [d.pos.cpu().numpy() for d in all_data]
-                background_pos = np.concatenate(all_pos_list, axis=0)
-                
-                # 3. 使用 Plotly 绘制 3D 散点图
-                import plotly.graph_objects as go
-                
-                fig = go.Figure()
-                
-                # --- 第一层：画背景云（灰色，半透明） ---
-                fig.add_trace(go.Scatter3d(
-                    x=background_pos[:, 0],
-                    y=background_pos[:, 1],
-                    z=background_pos[:, 2],
-                    mode='markers',
-                    marker=dict(
-                        size=2,            # 背景点很小
-                        color='gray',      # 灰色
-                        opacity=0.1        # 非常透明，像云雾一样
-                    ),
-                    name='整体分布背景',
-                    hoverinfo='skip'       # 鼠标滑过不显示提示，避免卡顿
-                ))
-                
-                # --- 第二层：画选中样本（红色，大球） ---
-                fig.add_trace(go.Scatter3d(
-                    x=current_pos[:, 0],
-                    y=current_pos[:, 1],
-                    z=current_pos[:, 2],
-                    mode='markers',
-                    marker=dict(
-                        size=6,            # 选中的点很大，显眼
-                        color='red',       # 鲜红色
-                        opacity=1.0        # 完全不透明
-                    ),
-                    name=f'选中样本 (ID: {sample_idx})'
-                ))
-                
-                # 4. 调整布局并显示
-                fig.update_layout(
-                    scene=dict(
-                        xaxis_title='X 轴',
-                        yaxis_title='Y 轴',
-                        zaxis_title='Z 轴',
-                        aspectmode='data'  # 保持真实比例，不被拉伸
-                    ),
-                    margin=dict(l=0, r=0, b=0, t=30),
-                    legend=dict(x=0, y=1)
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-            
-           
+                    st.success("✅ 分析完成！")
+                    
+                    # ================= 绘图逻辑 (带高亮) =================
+                    st.markdown("### 🌌 神经元空间分布与特征映射")
+                    
+                    import numpy as np
+                    import plotly.graph_objects as go
+                    
+                    # 获取当前样本坐标 (红球)
+                    current_pos = target_graph.pos.cpu().numpy()
+                    
+                    # 获取所有样本坐标 (背景灰云)
+                    all_pos_list = [d.pos.cpu().numpy() for d in all_data]
+                    background_pos = np.concatenate(all_pos_list, axis=0)
+                    
+                    fig = go.Figure()
+                    
+                    # A. 画背景 (灰色)
+                    fig.add_trace(go.Scatter3d(
+                        x=background_pos[:, 0],
+                        y=background_pos[:, 1],
+                        z=background_pos[:, 2],
+                        mode='markers',
+                        marker=dict(size=2, color='gray', opacity=0.1),
+                        name='所有神经元背景'
+                    ))
+                    
+                    # B. 画当前样本 (红色高亮)
+                    fig.add_trace(go.Scatter3d(
+                        x=current_pos[:, 0],
+                        y=current_pos[:, 1],
+                        z=current_pos[:, 2],
+                        mode='markers',
+                        marker=dict(size=6, color='red', opacity=1.0),
+                        name=f'当前样本 (ID: {sample_idx})'
+                    ))
+                    
+                    fig.update_layout(
+                        scene=dict(
+                            xaxis_title='X',
+                            yaxis_title='Y',
+                            zaxis_title='Z'
+                        ),
+                        height=600
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"分析过程中出错: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())          
