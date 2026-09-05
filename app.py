@@ -366,90 +366,68 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
-            # ======================= 最终修复版 (含背景点+错误处理) =======================
-            
-            # 1. 按钮点击事件
+            # ======================= 核心分析逻辑 (终极修复版) =======================
             if st.button("开始分析该样本"):
-                
-                # 2. 开始尝试执行 (try)
                 try:
-                   # 1. 获取原始数据
+                    # 1. 获取选中的样本
                     raw_sample = all_data[sample_idx]
                     
-                    # 2. 【核心修复】强制重构 Data 对象
-                    # 这一步能解决 'GlobalStorage' 报错，确保数据是完整的
+                    # 2. 【数据清洗】确保数据完整，防止各种 AttributeError
                     from torch_geometric.data import Data
+                    import torch
                     
-                    target_graph = Data(
-                        x=raw_sample.x.to(device),          # 节点特征
-                        edge_index=raw_sample.edge_index.to(device), # 边索引
-                        pos=raw_sample.pos.to(device) if hasattr(raw_sample, 'pos') and raw_sample.pos is not None else None # 位置信息(如果有)
-                    )
+                    # 提取特征和边，如果原数据没有边，就创建一个空的
+                    x = raw_sample.x.to(device)
+                    edge_index = raw_sample.edge_index.to(device) if hasattr(raw_sample, 'edge_index') and raw_sample.edge_index is not None else torch.empty((2, 0), dtype=torch.long, device=device)
                     
-                    # 3. 运行模型 (注意：现在只传 graph，因为 edge_index 已经在 graph 里了)
-                    # 如果你的 model forward 定义是 def forward(self, data): 用这一行：
-                    out = model(target_graph) 
+                    # 【关键修复】手动创建 batch 向量
+                    # 因为只有一个样本，所以所有节点的 batch ID 都是 0
+                    batch = torch.zeros(x.size(0), dtype=torch.long, device=device)
                     
-                    # 如果你的 model forward 定义是 def forward(self, x, edge_index, batch): 用这一行：
-                    # batch_vec = torch.zeros(target_graph.x.size(0), dtype=torch.long, device=device)
-                    # out = model(target_graph.x, target_graph.edge_index, batch_vec)
-
-                    # 4. 提取向量 (假设输出是 [1, dim] 或 [dim])
-                    if out.dim() > 1:
-                        embedding = out[0].cpu().detach().numpy()
-                    else:
-                        embedding = out.cpu().detach().numpy()
-                        
-                    st.success(f"样本 {sample_idx} 分析完成！")
+                    # 3. 【核心修复】按照模型要求的格式传参
+                    # 你的模型定义是 forward(self, x, edge_index, batch)，所以必须这样调
+                    model.eval()
+                    with torch.no_grad():
+                        out = model(x, edge_index, batch)
                     
-                    # --- 显示向量数值 ---
-                    st.markdown("### 🚀 嵌入向量前3维")
-                    vec_str = ", ".join([f"{x:.6f}" for x in single_embedding[0][:3]])
-                    st.latex(f"[ {vec_str} ]")
+                    st.success("✅ 分析完成！")
                     
-                    # --- 3D 可视化 (带背景参照) ---
-                    st.markdown("### 🌌 空间位置分布")
-                    
+                    # 4. 可视化结果
                     import plotly.graph_objects as go
                     
-                    # A. 准备背景数据 (所有样本)
-                    bg_x, bg_y, bg_z = [], [], []
-                    for g in all_data:
-                        pos = g.x[0].cpu().numpy() # 取第一个节点作为代表
-                        bg_x.append(pos[0])
-                        bg_y.append(pos[1])
-                        bg_z.append(pos[2])
+                    # 将结果转回 CPU 用于画图
+                    embedding = out.cpu().numpy()
+                    original_pos = x[:, :3].cpu().numpy() # 取前3维作为坐标
                     
-                    # B. 准备目标数据 (当前选中的样本)
-                    target_pos = all_data[sample_idx].x[0].cpu().numpy()
-                    
-                    # C. 绘图
-                    fig = go.Figure()
-                    
-                    # 添加背景灰点
-                    fig.add_trace(go.Scatter3d(
-                        x=bg_x, y=bg_y, z=bg_z,
+                    # 创建 3D 散点图
+                    fig = go.Figure(data=[go.Scatter3d(
+                        x=original_pos[:, 0],
+                        y=original_pos[:, 1],
+                        z=original_pos[:, 2],
                         mode='markers',
-                        marker=dict(size=2, color='gray', opacity=0.3),
-                        name='所有样本 (背景)'
-                    ))
+                        marker=dict(
+                            size=5,
+                            color=embedding,      # 用模型输出的特征来着色
+                            colorscale='Viridis', 
+                            opacity=0.8
+                        )
+                    )])
                     
-                    # 添加目标红点
-                    fig.add_trace(go.Scatter3d(
-                        x=[target_pos[0]], y=[target_pos[1]], z=[target_pos[2]],
-                        mode='markers+text',
-                        text=[f"Sample {sample_idx}"],
-                        textposition="top center",
-                        marker=dict(size=8, color='red'),
-                        name='当前样本'
-                    ))
+                    fig.update_layout(
+                        title='神经元空间分布与特征映射',
+                        scene=dict(
+                            xaxis_title='X',
+                            yaxis_title='Y',
+                            zaxis_title='Z'
+                        ),
+                        margin=dict(l=0, r=0, b=0, t=30)
+                    )
                     
-                    fig.update_layout(scene=dict(xaxis_title='Dim 1', yaxis_title='Dim 2', zaxis_title='Dim 3'))
                     st.plotly_chart(fig, use_container_width=True)
 
-                # 3. 【关键】这里补上了 except，防止报错
                 except Exception as e:
                     st.error(f"分析过程中出错: {str(e)}")
-                    st.exception(e) # 显示详细错误信息
+                    import traceback
+                    st.code(traceback.format_exc())       
             
            
