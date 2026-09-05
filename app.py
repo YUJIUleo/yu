@@ -366,88 +366,77 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
+                        # ======================= 最终修复版 =======================
+            
+            # 1. 按钮判断 (注意冒号)
             if st.button("开始分析该样本"):
-                      # ======================= 替换从这里开始 =======================
-            try:
-                # *** 关键修复：只取当前这一个样本 ***
-                target_graph = all_data[sample_idx].to(device)
-
-                model.eval()
-                with torch.no_grad():
-                    # 构造单样本的 batch 向量
-                    batch_vec = torch.zeros(target_graph.x.size(0), dtype=torch.long, device=device)
-                    # 跑模型
-                    out = model(target_graph.x, target_graph.edge_index, batch_vec)
-                    # 【修正点1】统一变量名为 single_embedding
-                    single_embedding = out.cpu().numpy() 
-
-                st.success(f"样本 {sample_idx} 分析完成！")
-
-                # --- 显示数值 ---
-                st.markdown("### 🧬 嵌入向量前3维")
-                # 【修正点2】这里要用 single_embedding，不能用 pred_embedding
-                vec_str = " ".join([f"{x:.6f}" for x in single_embedding[0][:3]])
-                st.latex(f"[ {vec_str} ]")
-
-                # --- 3D 可视化 (带背景版) ---
-                st.markdown("### 🌌 空间位置分布")
                 
-                import plotly.graph_objects as go
-                import numpy as np
+                # 2. try 必须缩进在 if 里面！
+                try:
+                    # *** 关键：只取当前这一个样本 ***
+                    # 确保 all_data 是之前加载好的列表
+                    target_graph = all_data[sample_idx].to(device)
 
-                # 1. 准备背景数据 (所有训练集样本)
-                bg_x, bg_y, bg_z = [], [], []
-                bg_labels = []
-                
-                # 简单处理：取每个样本的第一个节点坐标作为代表 (或者你可以用均值)
-                for g in all_data:
-                    pos = g.x.cpu().numpy()
-                    if len(pos) > 0:
-                        # 假设前3维是坐标，如果不是请调整索引
-                        # 如果维度不够3维，这里可能需要补0，但通常训练集是齐的
-                        coords = pos[0] 
-                        while len(coords) < 3: coords = np.append(coords, 0)
+                    model.eval()
+                    with torch.no_grad():
+                        # 构造单样本的 batch 向量 (全0即可，因为GNN主要看结构)
+                        batch_vec = torch.zeros(target_graph.x.size(0), dtype=torch.long, device=device)
                         
-                        bg_x.append(coords[0])
-                        bg_y.append(coords[1])
-                        bg_z.append(coords[2])
-                        bg_labels.append(str(getattr(g, 'y', 0).item()))
+                        # 跑模型
+                        out = model(target_graph.x, target_graph.edge_index, batch_vec)
+                        
+                        # 拿到结果 (修正变量名)
+                        single_embedding = out.cpu().numpy()
 
-                # 2. 准备当前选中的红点数据
-                cur_pos = single_embedding[0]
-                # 确保有3维
-                while len(cur_pos) < 3: cur_pos = np.append(cur_pos, 0)
+                    # 显示成功提示
+                    st.success(f"样本 {sample_idx} 分析完成！")
+                    
+                    # --- 显示数值 ---
+                    st.markdown("### 🧬 嵌入向量前3维")
+                    vec_str = " ".join([f"{x:.6f}" for x in single_embedding[0][:3]])
+                    st.latex(f"[ {vec_str} ]")
 
-                # 3. 绘图
-                fig = go.Figure()
+                    # --- 3D 可视化 (带背景版) ---
+                    st.markdown("### 🌌 空间位置分布")
+                    
+                    import plotly.graph_objects as go
+                    import numpy as np
 
-                # 画背景灰点
-                fig.add_trace(go.Scatter3d(
-                    x=bg_x, y=bg_y, z=bg_z,
-                    mode='markers',
-                    marker=dict(size=2, color='gray', opacity=0.3),
-                    name='训练集背景'
-                ))
+                    # 准备背景数据 (所有训练集样本)
+                    bg_x, bg_y, bg_z = [], [], []
+                    bg_labels = []
+                    
+                    # 简单处理：取每个样本的第一个节点坐标作为代表
+                    for g in all_data:
+                        pos = g.x.cpu().numpy() 
+                        if len(pos) > 0:
+                            # 假设你的模型输出维度是固定的，这里简化处理取前3维
+                            # 如果 all_data 还没跑过模型，这里可能需要先跑一遍或者用预存特征
+                            # *注意：如果 all_data 只是原始图数据，这里画图可能没意义，除非你有预存的 embedding*
+                            # 这里假设我们要画的是“原始特征”或者你之前算好的“全局嵌入”
+                            # 为了演示，这里暂时只画当前点，或者你需要提供所有点的 embedding
+                            pass 
 
-                # 画当前红点
-                fig.add_trace(go.Scatter3d(
-                    x=[cur_pos[0]], y=[cur_pos[1]], z=[cur_pos[2]],
-                    mode='markers+text',
-                    text=[f"Sample {sample_idx}"],
-                    textposition="top center",
-                    marker=dict(size=8, color='red'),
-                    name='当前样本'
-                ))
+                    # 【临时方案】：既然 all_data 可能没 embedding，我们先只画这个红点，
+                    # 等你确认逻辑通了，我们再想办法把背景加进去（否则容易再次内存溢出）
+                    
+                    fig = go.Figure(data=[go.Scatter3d(
+                        x=[single_embedding[0][0]],
+                        y=[single_embedding[0][1]],
+                        z=[single_embedding[0][2]],
+                        mode='markers+text',
+                        marker=dict(size=10, color='red'),
+                        text=[f"Sample {sample_idx}"],
+                        textposition="top center"
+                    )])
+                    
+                    fig.update_layout(scene=dict(
+                        xaxis_title='Dim 1',
+                        yaxis_title='Dim 2',
+                        zaxis_title='Dim 3'
+                    ))
+                    
+                    st.plotly_chart(fig, use_container_width=True)
 
-                fig.update_layout(
-                    scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
-                    margin=dict(l=0, r=0, b=0, t=30)
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-
-            except Exception as e:
-                # 【修正点3】补上 except，防止语法报错
-                st.error(f"分析过程中出错: {str(e)}")
-                import traceback
-                traceback.print_exc()
+                except Exception as e:
+                    st.error(f"出错了: {e}")
