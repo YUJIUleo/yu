@@ -366,91 +366,88 @@ elif page == "🔮 预测演示":
         if candidates:
             sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
             
-             # ======================= 终极完整版：分析 + 绘图 =======================
+            # ======================= 终极完整版：分析 + 绘图 =======================
             if st.button("开始分析该样本"):
                 try:
-                    # 1. 获取并清洗数据
+                    # 1. 获取原始数据
                     raw_sample = all_data[sample_idx]
                     
-                    # 【关键修复】安全处理 pos 属性，防止 NoneType 报错
+                    # 2. 【核心修复】安全处理 pos 属性
+                    # 如果原数据有 pos 且不为空，直接用；否则标记为 None
                     safe_pos = None
                     if hasattr(raw_sample, 'pos') and raw_sample.pos is not None:
                         safe_pos = raw_sample.pos.to(device)
                     
-                    # 构建标准的 Data 对象
                     from torch_geometric.data import Data
+                    
+                    # 3. 构建标准的 Data 对象
                     target_graph = Data(
                         x=raw_sample.x.to(device),
                         edge_index=raw_sample.edge_index.to(device),
-                        pos=safe_pos
+                        pos=safe_pos 
                     )
-
-                    # 2. 执行模型推理 (适配你的 GCNEncoder 参数要求)
+                    
+                    # 4. 模型推理
                     model.eval()
                     with torch.no_grad():
-                        # 构造单样本的 batch 向量 [0, 0, 0...]
-                        batch_vec = torch.zeros(target_graph.x.size(0), dtype=torch.long, device=device)
-                        
-                        # 传入三个参数：特征、边、批次号
-                        out = model(target_graph.x, target_graph.edge_index, batch_vec)
+                        out = model(target_graph)
+                        # 获取嵌入向量 (假设是最后一个隐藏层或输出层)
+                        embedding = out.cpu().numpy().flatten()
                     
-                    st.success("✅ 分析完成！正在生成空间分布图...")
-
-                    # 3. 绘制带“红球”高亮的 3D 散点图
-                    if hasattr(target_graph, 'pos') and target_graph.pos is not None:
-                        import numpy as np
-                        import plotly.graph_objects as go
-                        
-                        # 获取当前样本坐标 (红色焦点)
-                        current_pos = target_graph.pos.cpu().numpy()
-                        
-                        # 获取所有数据坐标 (灰色背景云)
-                        all_pos_list = []
-                        for d in all_data:
-                            if hasattr(d, 'pos') and d.pos is not None:
-                                all_pos_list.append(d.pos.cpu().numpy())
-                        
-                        if all_pos_list:
-                            background_pos = np.concatenate(all_pos_list, axis=0)
-                            
-                            fig = go.Figure()
-                            
-                            # --- 第一层：画背景云 (灰色) ---
-                            fig.add_trace(go.Scatter3d(
-                                x=background_pos[:, 0],
-                                y=background_pos[:, 1],
-                                z=background_pos[:, 2],
-                                mode='markers',
-                                marker=dict(size=2, color='gray', opacity=0.3),
-                                name='所有样本分布'
-                            ))
-                            
-                            # --- 第二层：画选中样本 (红色大球) ---
-                            fig.add_trace(go.Scatter3d(
-                                x=current_pos[:, 0],
-                                y=current_pos[:, 1],
-                                z=current_pos[:, 2],
-                                mode='markers',
-                                marker=dict(size=6, color='red', opacity=1.0, symbol='circle'),
-                                name=f'当前样本 (ID: {sample_idx})'
-                            ))
-                            
-                            fig.update_layout(
-                                scene=dict(
-                                    xaxis_title='X', yaxis_title='Y', zaxis_title='Z',
-                                    aspectmode='data'
-                                ),
-                                margin=dict(l=0, r=0, b=0, t=30),
-                                height=600
-                            )
-                            
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.warning("⚠️ 背景数据为空，无法绘制对比图。")
+                    st.success("分析完成！正在生成空间分布图...")
+                    
+                    # 5. 【关键】如果没有坐标，现场算一个 (t-SNE)
+                    import numpy as np
+                    from sklearn.manifold import TSNE
+                    
+                    # 收集所有数据的特征用于计算布局
+                    all_features = np.array([d.x.mean(dim=0).cpu().numpy() for d in all_data])
+                    
+                    # 如果原数据没坐标，就用 t-SNE 生成 3D 坐标
+                    if safe_pos is None:
+                        tsne = TSNE(n_components=3, random_state=42)
+                        computed_pos = tsne.fit_transform(all_features)
+                        # 把算好的坐标赋给当前样本和背景
+                        current_pos = computed_pos[sample_idx].reshape(1, -1)
+                        background_pos = computed_pos
                     else:
-                        st.warning("⚠️ 当前样本缺少空间坐标 (pos)，无法绘制 3D 图。")
+                        # 如果有原坐标，直接用
+                        current_pos = safe_pos.cpu().numpy().reshape(1, -1) if safe_pos.dim() == 1 else safe_pos.cpu().numpy()
+                        all_pos_list = [d.pos.cpu().numpy() for d in all_data]
+                        background_pos = np.concatenate(all_pos_list, axis=0)
+
+                    # 6. 绘图 (带红球高亮)
+                    import plotly.graph_objects as go
+                    
+                    fig = go.Figure()
+                    
+                    # --- 第一层：背景云 (灰色) ---
+                    fig.add_trace(go.Scatter3d(
+                        x=background_pos[:, 0],
+                        y=background_pos[:, 1],
+                        z=background_pos[:, 2],
+                        mode='markers',
+                        marker=dict(size=3, color='gray', opacity=0.3),
+                        name='其他样本'
+                    ))
+                    
+                    # --- 第二层：当前样本 (红色大球) ---
+                    fig.add_trace(go.Scatter3d(
+                        x=current_pos[:, 0],
+                        y=current_pos[:, 1],
+                        z=current_pos[:, 2],
+                        mode='markers',
+                        marker=dict(size=8, color='red', symbol='circle'),
+                        name='当前分析样本'
+                    ))
+                    
+                    fig.update_layout(
+                        scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
+                        margin=dict(l=0, r=0, b=0, t=0),
+                        height=600
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
 
                 except Exception as e:
-                    st.error(f"💥 发生未知错误: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())       
+                    st.error(f"分析出错: {str(e)}")   
