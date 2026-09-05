@@ -216,148 +216,178 @@ elif page == "🔬 嵌入可视化":
     except ImportError:
         st.error("未安装 umap-learn，请运行: pip install umap-learn")
 
-# ======================= 页面4: 预测演示 (最终修复版) =======================
+# ======================= 页面4: 预测演示 (最终修复版 - 包含batch参数) =======================
 elif page == "🔮 预测演示":
     st.title("🔮 新样本预测演示")
     st.write("选择一种方式，查看模型如何将其映射到嵌入空间并判断类型。")
     st.divider()
 
-    # --- 【关键前置检查】确保 all_data 存在 ---
-    # 如果 all_data 还没加载，尝试在这里初始化（防止下面取值时报错）
+    # --- 【关键前置检查】确保 all_data 和 embeddings 存在 ---
+    # 如果之前页面没加载，这里尝试加载（防止 NameError）
     if 'all_data' not in globals() and 'all_data' not in locals():
-        try:
-            # 这里假设你的数据加载函数叫 load_data() 或者类似的
-            # 如果没有，请确保你在其他页面已经正确加载了 all_data
-            # 为了演示，这里假设 all_data 是全局存在的，或者你需要手动导入
-            st.warning("⚠️ 检测到数据未加载，正在尝试重新加载...")
-            # all_data = load_your_data_function() # <--- 请取消注释并填入你的加载函数
-        except Exception as e:
-            st.error(f"数据加载失败: {e}")
-            st.stop()
+        st.error("系统错误：未检测到训练集数据 (all_data)。请确保数据加载脚本已运行。")
+        st.stop()
+    
+    # 如果 embeddings 还没算，这里现算（防止 NameError）
+    if 'embeddings' not in locals():
+        with st.spinner("正在后台计算训练集特征向量..."):
+            try:
+                # 假设你的模型叫 model，数据叫 all_data
+                # 注意：这里需要构建一个大的 batch 来一次性计算所有训练集的 embedding
+                # 如果 all_data 很大，这里可能会慢，但在演示页通常没问题
+                
+                # 1. 拼接所有数据
+                from torch_geometric.data import Batch
+                big_batch = Batch.from_data_list(all_data)
+                
+                # 2. 推理模式
+                model.eval()
+                with torch.no_grad():
+                    # 【关键修复】传入 batch 参数
+                    embeddings = model(big_batch.x, big_batch.edge_index, big_batch.batch).cpu().numpy()
+            except Exception as e:
+                st.error(f"计算特征向量失败: {e}")
+                st.stop()
 
-    # 确保 model 也存在
-    if 'model' not in globals():
-         st.error("模型未加载，请检查主程序配置。")
-         st.stop()
-
+    # --- 创建两个标签页 ---
     tab1, tab2 = st.tabs(["📷 方式一：上传图片", "📂 方式二：选择样本"])
 
-    # ================== 方式一：上传图片 ==================
+    # ======================= 方式一：上传图片 =======================
     with tab1:
-        st.subheader("上传真实神经元切片 (PNG/JPG)")
-        uploaded_file = st.file_uploader("选择图片", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+        st.subheader("从本地上传真实神经元切片")
+        uploaded_file = st.file_uploader("选择图片...", type=["png", "jpg", "jpeg"], key="upload_img")
 
         if uploaded_file is not None:
             try:
+                # 1. 图像处理与特征提取 (模拟你之前的逻辑)
                 from PIL import Image
                 import numpy as np
                 import torch
-                from sklearn.metrics.pairwise import cosine_similarity
-
-                # 1. 图片预处理
-                img = Image.open(uploaded_file).convert("L")
+                
+                img = Image.open(uploaded_file).convert('L') # 转灰度
                 img_np = np.array(img)
                 
-                # 简单的二值化处理（根据你的实际需求调整阈值）
-                binary = (img_np > 127).astype(np.uint8) 
+                # 这里假设你有一个函数 extract_features_from_image 能提取出 area, fractal_dim 等
+                # 如果没有，这里用随机数或固定值代替演示，你需要填入真实的图像处理逻辑
+                # 假设提取出的特征是 feat_list
+                # ⚠️ 注意：这里的特征提取逻辑必须和训练时保持一致！
                 
-                # 2. 计算特征 (模拟你的特征提取逻辑)
-                # 注意：这里需要和你训练时的特征提取逻辑保持一致
-                # 假设你的模型输入需要特定的格式，这里简化处理
-                h, w = binary.shape
+                # 模拟特征提取 (请替换为你真实的图像->特征值逻辑)
+                # 假设你的特征是 [area, fractal_dim, eccentricity]
+                # 这里为了演示不报错，我随便写了几个数，**请务必改成你真实的计算逻辑**
+                area = 1000 
+                fractal_dim = 1.5
+                eccentricity = 0.8
                 
-                # 这里只是为了演示不报错，实际请替换为你真实的特征提取代码
-                # 比如计算 area, perimeter 等
-                area = np.sum(binary)
-                # ... 其他特征 ...
+                feat_list = [area, fractal_dim, eccentricity] 
                 
-                # 构造输入向量 (假设你的模型输入维度是固定的)
-                # 如果模型是处理图结构的，这里需要构建 graph
-                # 这里假设你有一个函数 extract_features_from_image
-                # feat = extract_features_from_image(binary) 
+                # 2. 构建图数据 (Graph Data)
+                # 假设你的模型输入是一个包含这些特征的简单图，或者你需要把图片转成图
+                # 这里假设你是把这几个特征作为节点特征 x
+                x_tensor = torch.tensor([feat_list], dtype=torch.float)
                 
-                # ⚠️ 临时方案：为了演示流程，我们生成一个随机向量或简单向量
-                # 请务必替换为你真实的图片转 tensor 逻辑
-                dummy_feat = torch.randn(1, 10) # 假设输入维度是10
+                # 假设没有边（或者根据特征构建边），这里造一个空的 edge_index
+                edge_index = torch.tensor([[0], [0]], dtype=torch.long) 
                 
+                # 构造 batch 向量 (只有一个节点，所以是 [0])
+                batch_vec = torch.tensor([0], dtype=torch.long)
+
                 # 3. 模型预测
+                model.eval()
                 with torch.no_grad():
-                    pred_emb = model(dummy_feat).numpy().reshape(1, -1)
+                    # 【关键修复】传入 batch_vec
+                    pred_emb = model(x_tensor, edge_index, batch_vec).cpu().numpy()
 
                 # 4. 计算相似度
-                # 确保 embeddings 是全局变量且已计算
-                if 'embeddings' in globals():
-                    sims = cosine_similarity(pred_emb, embeddings)[0]
-                    top5_idx = np.argsort(sims)[-5:][::-1]
-                    
-                    st.success("✅ 分析完成！最相似的 Top 5 样本：")
-                    for rank, idx in enumerate(top5_idx):
-                        st.write(f"{rank+1}. 样本 #{idx} (相似度: {sims[idx]:.4f})")
-                else:
-                    st.warning("⚠️ 训练集特征库 (embeddings) 尚未加载，无法进行比对。")
+                from sklearn.metrics.pairwise import cosine_similarity
+                sims = cosine_similarity(pred_emb.reshape(1, -1), embeddings)[0]
+                top5_idx = np.argsort(sims)[-5:][::-1]
+
+                # 5. 展示结果
+                st.success("分析完成！找到最相似的 5 个样本：")
+                
+                # 显示上传的图片
+                st.image(uploaded_file, caption="上传的切片", width=200)
+                
+                # 显示 Top 5 列表
+                for rank, idx in enumerate(top5_idx):
+                    true_type = all_data[idx].y.item() # 假设标签存在 .y 中
+                    sim_val = sims[idx]
+                    st.markdown(f"**第 {rank+1} 相似**: 样本 {idx} | 类型: {true_type} | 相似度: {sim_val:.4f}")
 
             except Exception as e:
-                st.error(f"图片处理出错: {e}")
+                st.error(f"图片分析出错: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
-    # ================== 方式二：选择样本 ==================
+    # ======================= 方式二：选择样本 =======================
     with tab2:
         st.subheader("从训练集中选择样本进行测试")
         
-        # 安全检查：确保有数据可选
-        if 'all_data' in globals() and len(globals()['all_data']) > 0:
-            all_data = globals()['all_data']
-            
-            # 生成选项列表
-            options = [f"样本 {i}" for i in range(len(all_data))]
-            selected_option = st.selectbox("请选择一个样本:", options)
-            
-            if selected_option:
-                # 获取选中的索引
-                selected_idx = int(selected_option.split(" ")[1])
+        # 生成选项列表
+        sample_options = {f"样本 {i} (类型: {d.y.item()})": i for i, d in enumerate(all_data)}
+        selected_label = st.selectbox("请选择一个样本:", list(sample_options.keys()))
+        selected_idx = sample_options[selected_label]
+
+        if selected_idx is not None:
+            try:
                 sample = all_data[selected_idx]
                 
-                st.info(f"正在分析：{selected_option}")
+                # 1. 准备模型输入
+                # 增加一个维度变成 batch (因为模型通常接受 batch 输入)
+                x_tensor = sample.x.unsqueeze(0)  # [Num_Nodes, Feat] -> [1, Num_Nodes, Feat] ? 
+                # 不对，PyG 的模型通常接受 [Total_Nodes, Feat]，通过 batch 向量区分
                 
-                try:
-                    import torch
-                    from sklearn.metrics.pairwise import cosine_similarity
-                    import numpy as np
+                # PyG 标准做法：直接使用 sample 的属性，但需要构造 batch 向量
+                x_input = sample.x
+                edge_input = sample.edge_index
+                
+                # 【关键修复】构造 batch 向量
+                # 如果 sample.x 有 N 个节点，batch 向量就是 [0, 0, ..., 0] (长度为 N)
+                batch_input = torch.zeros(sample.x.size(0), dtype=torch.long)
 
-                    # 1. 准备单个样本的数据
-                    # 关键点：不要把所有数据 stack 在一起，只处理当前这一个 sample
-                    # 假设 sample 是一个对象，包含 x (坐标) 和 edge_index
-                    
-                    # 将数据转为 Tensor (增加 batch 维度)
-                    # 注意：这里要根据你 sample 的实际结构来写
-                    # 假设 sample.x 是坐标 [N, 3]
-                    x_tensor = torch.tensor(sample.x, dtype=torch.float).unsqueeze(0) # [1, N, 3]
-                    
-                    # 如果你的模型需要 edge_index，也要单独取
-                    edge_index = torch.tensor(sample.edge_index, dtype=torch.long)
-                    
-                    # 2. 送入模型
-                    with torch.no_grad():
-                        # ⚠️ 关键修复：只传入这一个样本的数据
-                        # 如果你的模型 forward 定义是 def forward(self, x, edge_index):
-                        sample_emb = model(x_tensor, edge_index).numpy().reshape(1, -1)
-                    
-                    # 3. 计算相似度
-                    if 'embeddings' in globals():
-                        sims_sample = cosine_similarity(sample_emb, embeddings)[0]
-                        top5_idx_sample = np.argsort(sims_sample)[-5:][::-1]
-                        
-                        st.success("✅ 分析完成！该样本在库中的相似度排名：")
-                        
-                        # 展示结果
-                        cols = st.columns(5)
-                        for i, idx in enumerate(top5_idx_sample):
-                            with cols[i]:
-                                st.metric(f"Top {i+1}", f"#{idx}", f"{sims_sample[idx]:.2%}")
-                    else:
-                        st.warning("⚠️ 缺少 embeddings 数据，无法计算相似度。")
+                # 2. 模型预测
+                model.eval()
+                with torch.no_grad():
+                    # 传入 x, edge_index, batch
+                    sample_emb = model(x_input, edge_input, batch_input).cpu().numpy()
 
-                except Exception as e:
-                    st.error(f"样本分析出错: {e}")
-                    st.exception(e) # 显示详细错误信息以便调试
-        else:
-            st.error("❌ 未找到训练数据 (all_data)，请先运行数据加载程序。")
+                # 3. 计算相似度 (自己和自己比应该是 1.0，这里主要看它和其他人的距离)
+                from sklearn.metrics.pairwise import cosine_similarity
+                sims = cosine_similarity(sample_emb.reshape(1, -1), embeddings)[0]
+                top5_idx = np.argsort(sims)[-5:][::-1]
+
+                # 4. 展示结果
+                st.info(f"正在分析：{selected_label}")
+                
+                # 显示 Top 5
+                st.write("**最相似的 5 个训练样本：**")
+                for rank, idx in enumerate(top5_idx):
+                    true_type = all_data[idx].y.item()
+                    sim_val = sims[idx]
+                    
+                    # 高亮当前选中的样本
+                    is_current = (idx == selected_idx)
+                    prefix = "👉 **(当前)**" if is_current else f"👉 **Top {rank+1}**"
+                    
+                    st.markdown(f"{prefix} 样本 {idx} | 类型: {true_type} | 相似度: {sim_val:.4f}")
+
+                # 5. 可视化 (可选)
+                st.subheader("3D 结构可视化")
+                import plotly.graph_objects as go
+                
+                pos = sample.pos.numpy() if hasattr(sample, 'pos') else sample.x[:, :3].numpy() # 尝试获取坐标
+                
+                fig = go.Figure(data=[go.Scatter3d(
+                    x=pos[:, 0], y=pos[:, 1], z=pos[:, 2],
+                    mode='markers+lines',
+                    marker=dict(size=3, color=sample.y.item(), colorscale='Viridis'),
+                    line=dict(width=1)
+                )])
+                fig.update_layout(scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'))
+                st.plotly_chart(fig, use_container_width=True)
+
+            except Exception as e:
+                st.error(f"样本分析出错: {e}")
+                import traceback
+                st.code(traceback.format_exc())
