@@ -274,21 +274,29 @@ elif page == "🔮 预测演示":
         for i, idx in enumerate(top5_idx):
             sim_val = sims[idx] * 100
             true_type = type_names[labels[idx]]
-
 try:
-    # 如果 sim_val 是数组，取第一个值；如果是数字，直接转 float
-    current_progress = float(np.array(sim_val).flatten()[0]) / 100.0
+    # 1. 尝试把 sim_val 转成 numpy 数组并展平，取出第一个数值
+    # 这样无论是 [95], [[95]], 还是 95，都能变成单独的数字
+    raw_num = float(np.array(sim_val).flatten()[0])
     
-    # 防止数值溢出导致报错（限制在 0 到 1 之间）
-    current_progress = max(0.0, min(1.0, current_progress))
-    
-    st.progress(current_progress)
-except Exception as e:
-    # 如果计算出错，至少给个默认进度，防止程序崩溃
-    st.progress(1.0) 
-    st.warning(f"进度条显示异常: {e}")
-    st.caption(f"第{i+1}名：样本#{idx} | 真实类型：**{true_type}** | 相似度：**{sim_val:.1f}%**")
+    # 2. 归一化处理：如果数值大于1（比如是百分比95），就除以100
+    # 如果数值本身就是 0.95，除以100会变成0.0095，所以加个判断
+    if raw_num > 1.0:
+        progress_value = raw_num / 100.0
+    else:
+        progress_value = raw_num
         
+    # 3. 安全钳位：强制限制在 0.0 到 1.0 之间，防止溢出报错
+    progress_value = max(0.0, min(1.0, progress_value))
+    
+    # 4. 更新进度条
+    st.progress(progress_value)
+
+except Exception as e:
+    # 万一真的彻底坏了，至少给个满进度让程序跑完，并在旁边报个错
+    st.progress(1.0)
+    st.error(f"进度条数据异常: {e}")
+
         # === 嵌入空间可视化（上传样本） ===
     st.subheader("📊 嵌入空间位置")
         
