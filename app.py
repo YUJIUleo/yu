@@ -390,44 +390,66 @@ elif page == "🔮 预测演示":
                     with torch.no_grad():
                         out = model(x, edge_index, batch)
                     
-                    st.success("✅ 分析完成！")
-                    
-                    # 4. 可视化结果
-                    import plotly.graph_objects as go
-                    
-                    # 将结果转回 CPU 用于画图
-                    embedding = out.cpu().numpy()
-                    original_pos = x[:, :3].cpu().numpy() # 取前3维作为坐标
-                    
-                    # 创建 3D 散点图
-                    fig = go.Figure(data=[go.Scatter3d(
-                        x=original_pos[:, 0],
-                        y=original_pos[:, 1],
-                        z=original_pos[:, 2],
-                        mode='markers',
-                        marker=dict(
-                            size=5,
-                            color=embedding,      # 用模型输出的特征来着色
-                            colorscale='Viridis', 
-                            opacity=0.8
-                        )
-                    )])
-                    
-                    fig.update_layout(
-                        title='神经元空间分布与特征映射',
-                        scene=dict(
-                            xaxis_title='X',
-                            yaxis_title='Y',
-                            zaxis_title='Z'
-                        ),
-                        margin=dict(l=0, r=0, b=0, t=30)
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-
-                except Exception as e:
-                    st.error(f"分析过程中出错: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())       
+                        st.success("分析完成！")
+                
+                st.markdown("### 🌌 神经元空间分布与特征映射")
+                
+                # 1. 准备当前选中样本的数据（红色高亮）
+                # 确保坐标在 CPU 上并转为 numpy 数组
+                current_pos = target_graph.pos.cpu().numpy()
+                
+                # 2. 准备背景数据（灰色云团）
+                # 我们把所有样本的坐标拼在一起，作为背景环境
+                import numpy as np
+                all_pos_list = [d.pos.cpu().numpy() for d in all_data]
+                background_pos = np.concatenate(all_pos_list, axis=0)
+                
+                # 3. 使用 Plotly 绘制 3D 散点图
+                import plotly.graph_objects as go
+                
+                fig = go.Figure()
+                
+                # --- 第一层：画背景云（灰色，半透明） ---
+                fig.add_trace(go.Scatter3d(
+                    x=background_pos[:, 0],
+                    y=background_pos[:, 1],
+                    z=background_pos[:, 2],
+                    mode='markers',
+                    marker=dict(
+                        size=2,            # 背景点很小
+                        color='gray',      # 灰色
+                        opacity=0.1        # 非常透明，像云雾一样
+                    ),
+                    name='整体分布背景',
+                    hoverinfo='skip'       # 鼠标滑过不显示提示，避免卡顿
+                ))
+                
+                # --- 第二层：画选中样本（红色，大球） ---
+                fig.add_trace(go.Scatter3d(
+                    x=current_pos[:, 0],
+                    y=current_pos[:, 1],
+                    z=current_pos[:, 2],
+                    mode='markers',
+                    marker=dict(
+                        size=6,            # 选中的点很大，显眼
+                        color='red',       # 鲜红色
+                        opacity=1.0        # 完全不透明
+                    ),
+                    name=f'选中样本 (ID: {sample_idx})'
+                ))
+                
+                # 4. 调整布局并显示
+                fig.update_layout(
+                    scene=dict(
+                        xaxis_title='X 轴',
+                        yaxis_title='Y 轴',
+                        zaxis_title='Z 轴',
+                        aspectmode='data'  # 保持真实比例，不被拉伸
+                    ),
+                    margin=dict(l=0, r=0, b=0, t=30),
+                    legend=dict(x=0, y=1)
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
             
            
