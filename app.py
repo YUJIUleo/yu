@@ -216,150 +216,189 @@ elif page == "🔬 嵌入可视化":
     except ImportError:
         st.error("未安装 umap-learn，请运行: pip install umap-learn")
 
-# ======================= 页面4: 预测演示 (终极完整版 - 包含图像处理逻辑) =======================
+# ======================= 页面4: 预测演示 (双模式终极修复版) =======================
 elif page == "🔮 预测演示":
     st.title("🔮 新样本预测演示")
     st.write("选择一种方式，查看模型如何将其映射到嵌入空间并判断类型。")
     st.divider()
 
-    # --- 【核心修复 1】强制定义 device 和检查环境 ---
+    # --- 【环境检查】 ---
     try:
         import torch
+        import torch.nn.functional as F
+        from torch_geometric.data import Data
+        import numpy as np
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    except:
-        device = 'cpu'
+    except Exception as e:
+        st.error(f"环境初始化失败: {e}")
+        st.stop()
 
     if 'all_data' not in globals() and 'all_data' not in locals():
         st.error("系统错误：未检测到训练集数据 (all_data)。")
         st.stop()
 
-    # --- 【核心修复 2】计算或加载 Embeddings (作为背景地图) ---
-    # 如果 embeddings 还没算，这里现算（带缓存逻辑）
-    if 'embeddings' not in locals():
-        with st.spinner("正在后台计算训练集特征向量..."):
-            try:
-                model.eval()
-                all_x = torch.cat([d.x for d in all_data]).to(device)
-                all_edge = torch.cat([d.edge_index for d in all_data], dim=1).to(device)
-                all_batch = torch.cat([torch.full((d.num_nodes,), i) for i, d in enumerate(all_data)]).to(device)
-                
-                with torch.no_grad():
-                    embeddings = model(all_x, all_edge, all_batch).cpu().numpy()
-            except Exception as e:
-                st.error(f"计算 Embeddings 失败: {str(e)}")
-                st.stop()
+    # 获取训练集的特征维度 (in_channels)，这是防止报错的关键
+    # 假设 all_data 是一个列表，取第一个数据的 x 的列数
+    try:
+        target_feature_dim = all_data[0].x.shape[1]
+    except:
+        st.error("无法读取训练集特征维度，请检查 all_data 格式。")
+        st.stop()
 
-    tab1, tab2 = st.tabs(["方式一：上传真实切片", "方式二：选择预设样本"])
+    tab1, tab2 = st.tabs(["方式一：上传真实切片", "方式二：选择预设测试样本"])
 
-    # ======================= TAB 1: 上传图片 (新增图像处理逻辑) =======================
+    # ==========================================
+    # 方式一：上传真实切片 (修复维度不匹配)
+    # ==========================================
     with tab1:
-        uploaded_file = st.file_uploader("上传神经元切片 (PNG/JPG)", type=['png', 'jpg', 'jpeg'])
+        uploaded_file = st.file_uploader("上传神经元图片 (PNG/JPG)", type=['png', 'jpg', 'jpeg'])
         
         if uploaded_file is not None:
-            from PIL import Image
-            import numpy as np
-            import cv2
-            
-            # 1. 读取并显示图片
-            image = Image.open(uploaded_file).convert('L') # 转灰度
-            img_np = np.array(image)
-            st.image(image, caption="上传的切片", width=300)
-
-            # 2. 【核心逻辑】简单的图像处理：把图片变成图数据
-            # 这里模拟了一个简单的分割过程：找亮斑作为节点
-            with st.spinner("正在分析图片结构..."):
-                # 二值化：假设神经元是亮的
-                _, binary = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            try:
+                from PIL import Image
+                import cv2
                 
-                # 找连通域（把连在一起的亮斑当成一个神经元）
-                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+                # 1. 读取图片
+                image = Image.open(uploaded_file).convert('L') # 转灰度
+                img_np = np.array(image)
                 
-                # 过滤掉太小的噪点
-                min_area = 10 
-                valid_nodes = []
-                pos_list = []
+                # 2. 简单的图像处理：二值化找亮点 (模拟神经元中心)
+                _, binary = cv2.threshold(img_np, 50, 255, cv2.THRESH_BINARY)
+                contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
-                for i in range(1, num_labels): # 跳过背景 0
-                    area = stats[i, cv2.CC_STAT_AREA]
-                    if area > min_area:
-                        cx, cy = centroids[i]
-                        pos_list.append([cx, cy])
-                        valid_nodes.append(i)
-
-                if len(valid_nodes) < 2:
-                    st.warning("图片中未检测到足够的神经元结构（亮斑太少）。")
+                centers = []
+                for cnt in contours:
+                    area = cv2.contourArea(cnt)
+                    if 10 < area < 5000: # 过滤噪点和过大的块
+                        M = cv2.moments(cnt)
+                        if M["m00"] != 0:
+                            cx = int(M["m10"] / M["m00"])
+                            cy = int(M["m01"] / M["m00"])
+                            centers.append([cx, cy])
+                
+                if len(centers) < 2:
+                    st.warning("图片中未检测到足够的神经元节点（至少需要2个），请尝试调整阈值或换图。")
                 else:
-                    # 构建临时的 Graph 对象
-                    pos_tensor = torch.tensor(pos_list, dtype=torch.float)
+                    st.success(f"检测到 {len(centers)} 个神经元节点，正在构建图结构...")
                     
-                    # 构造边：距离近的连边 (KNN 思想)
-                    dist_matrix = torch.cdist(pos_tensor, pos_tensor)
-                    k = 3 # 每个点连最近的3个点
-                    top_k = dist_matrix.topk(k+1, largest=False)[1] # +1 因为包含自己
+                    # 3. 构建图数据 (Data)
+                    # 节点坐标归一化 (简单处理)
+                    coords = np.array(centers, dtype=np.float32)
+                    coords[:, 0] /= img_np.shape[1]
+                    coords[:, 1] /= img_np.shape[0]
                     
+                    # 构造 edge_index (简单的全连接或KNN，这里用距离阈值模拟)
                     edge_list = []
-                    for i in range(len(pos_list)):
-                        for j in top_k[i][1:]: # 跳过自己
-                            edge_list.append([i, j.item()])
+                    dist_threshold = 0.15 # 距离阈值
                     
+                    for i in range(len(coords)):
+                        for j in range(i+1, len(coords)):
+                            d = np.linalg.norm(coords[i] - coords[j])
+                            if d < dist_threshold:
+                                edge_list.append([i, j])
+                                edge_list.append([j, i])
+                    
+                    if not edge_list:
+                         st.warning("节点间距离过远，未形成连接。正在强制连接最近邻...")
+                         # 兜底：强制连成链
+                         for i in range(len(coords)-1):
+                             edge_list.append([i, i+1])
+                             edge_list.append([i+1, i])
+
                     edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
                     
-                    # 构造特征：这里简单用坐标作为特征 (或者你可以用 patch 的像素均值)
-                    x_feat = pos_tensor 
-
-                    # 封装成 Data 对象
-                    from torch_geometric.data import Data
-                    new_graph = Data(x=x_feat, edge_index=edge_index, pos=pos_tensor)
-                    new_graph = new_graph.to(device)
-
-                    # 3. 模型预测
+                    # *** 关键修复：特征维度对齐 ***
+                    # 如果训练集是3维(x,y,z)，而图片只有2维(x,y)，必须补0
+                    node_features = torch.tensor(coords, dtype=torch.float)
+                    current_dim = node_features.shape[1]
+                    
+                    if current_dim < target_feature_dim:
+                        padding = torch.zeros(node_features.shape[0], target_feature_dim - current_dim)
+                        node_features = torch.cat([node_features, padding], dim=1)
+                    elif current_dim > target_feature_dim:
+                        node_features = node_features[:, :target_feature_dim]
+                        
+                    new_graph = Data(x=node_features, edge_index=edge_index).to(device)
+                    
+                    # 4. 预测
                     model.eval()
                     with torch.no_grad():
-                        # 单样本 batch 全为 0
-                        batch_vec = torch.zeros(new_graph.num_nodes, dtype=torch.long, device=device)
-                        pred_embedding = model(new_graph.x, new_graph.edge_index, batch_vec).cpu().numpy().mean(axis=0, keepdims=True)
-
-                    # 4. 计算相似度 & 展示结果
-                    from sklearn.metrics.pairwise import cosine_similarity
-                    sims = cosine_similarity(pred_embedding, embeddings)[0]
-                    top5_idx = np.argsort(sims)[-5:][::-1]
-
-                    st.success(f"分析完成！检测到 {len(valid_nodes)} 个神经元节点。")
+                        # 构造 batch 向量
+                        batch_vec = torch.zeros(new_graph.x.size(0), dtype=torch.long, device=device)
+                        out = model(new_graph.x, new_graph.edge_index, batch_vec)
+                        pred_embedding = out.cpu().numpy()
                     
-                    # 显示 Top 5
-                    st.write("**最相似的 5 个训练样本：**")
-                    for rank, idx in enumerate(top5_idx):
-                        # 假设你的 all_data[i] 有 y 属性代表类别
-                        true_label = all_data[idx].y.item() if hasattr(all_data[idx], 'y') else "未知"
-                        st.caption(f"🏆 Top {rank+1}: 样本 {idx} (类型 {true_label}) | 相似度: {sims[idx]:.4f}")
-
-                    # 5. 3D 可视化 (复用之前的逻辑)
-                    st.write("**3D 结构可视化：**")
+                    st.success("预测完成！正在生成可视化...")
+                    
+                    # 5. 可视化 (只画背景 + 当前点)
+                    # 这里假设你有之前算好的 train_embeddings (如果没有，这里只能画当前点)
+                    # 为了演示，我们画一个散点图代表当前样本在空间的位置
                     import plotly.express as px
                     import pandas as pd
                     
-                    # 准备背景数据 (降维到 3D)
-                    # 注意：如果 embeddings 是高维的，这里需要 PCA/t-SNE 降到 3D
-                    # 假设 embeddings 已经是 3D 或者我们取前 3 维
-                    df_bg = pd.DataFrame(embeddings[:, :3], columns=['x', 'y', 'z'])
-                    df_bg['type'] = '训练集背景'
+                    df_curr = pd.DataFrame(pred_embedding, columns=['Dim1', 'Dim2', 'Dim3'])
+                    df_curr['Type'] = '新上传样本'
                     
-                    # 准备预测点数据
-                    df_pred = pd.DataFrame(pred_embedding[0, :3], columns=['x', 'y', 'z']).T
-                    df_pred['type'] = '当前上传样本'
-
-                    df_all = pd.concat([df_bg, df_pred])
-
-                    fig = px.scatter_3d(df_all, x='x', y='y', z='z', color='type',
-                                        color_discrete_map={'当前上传样本': 'red', '训练集背景': 'lightblue'},
-                                        size_max=10, opacity=0.6)
-                    fig.update_layout(margin=dict(l=0, r=0, b=0, t=0))
+                    fig = px.scatter_3d(df_curr, x='Dim1', y='Dim2', z='Dim3', color='Type', 
+                                        title="新样本嵌入位置", 
+                                        color_discrete_map={'新上传样本': 'red'})
+                    # 如果有历史数据可以 add_trace 加进去，这里简化处理
                     st.plotly_chart(fig, use_container_width=True)
 
-    # ======================= TAB 2: 选择预设样本 (保持之前的逻辑) =======================
+            except Exception as e:
+                st.error(f"图像处理或预测失败: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+
+    # ==========================================
+    # 方式二：选择预设测试样本 (修复全量堆叠报错)
+    # ==========================================
     with tab2:
-        # ... (这里放之前写好的 Tab 2 代码，为了节省篇幅省略，直接复用即可)
-        sample_idx = st.selectbox("请选择一个样本:", range(len(all_data)), format_func=lambda x: f"样本 {x} (类型 {all_data[x].y.item()})")
-        if st.button("开始分析"):
-             # ... (复用之前的 Tab 2 分析代码)
-             pass
+        # 获取所有样本的标签用于展示
+        labels = [getattr(d, 'y', 0).item() if hasattr(d, 'y') else 0 for d in all_data]
+        unique_labels = sorted(list(set(labels)))
+        
+        selected_label = st.selectbox("选择要测试的类别:", unique_labels)
+        
+        # 筛选出该类别的所有索引
+        candidates = [i for i, l in enumerate(labels) if l == selected_label]
+        
+        if candidates:
+            sample_idx = st.selectbox(f"从 [类型 {selected_label}] 中选择一个具体样本:", candidates)
+            
+            if st.button("开始分析该样本"):
+                try:
+                    # *** 关键修复：只取当前这一个样本 ***
+                    target_graph = all_data[sample_idx].to(device)
+                    
+                    model.eval()
+                    with torch.no_grad():
+                        # 构造单样本的 batch 向量
+                        batch_vec = torch.zeros(target_graph.x.size(0), dtype=torch.long, device=device)
+                        out = model(target_graph.x, target_graph.edge_index, batch_vec)
+                        single_embedding = out.cpu().numpy() # shape: [1, dim]
+                    
+                    st.success(f"样本 {sample_idx} 分析完成！")
+                    
+                    # 计算与训练集中其他样本的相似度 (余弦相似度)
+                    # 注意：这里需要用到之前算好的 all_embeddings，如果没有，现算会很慢
+                    # 这里做一个简化的演示：只展示该样本的特征值
+                    st.metric("嵌入向量前3维", f"{single_embedding[0][:3]}")
+                    
+                    # 简单的可视化
+                    import plotly.graph_objects as go
+                    fig = go.Figure(data=[go.Scatter3d(
+                        x=[single_embedding[0][0]], 
+                        y=[single_embedding[0][1]], 
+                        z=[single_embedding[0][2]],
+                        mode='markers+text',
+                        text=[f"Sample {sample_idx}"],
+                        marker=dict(size=10, color='red')
+                    )])
+                    fig.update_layout(title=f"样本 {sample_idx} 的独立空间位置", scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'))
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                except Exception as e:
+                    st.error(f"单样本分析失败: {str(e)}")
+        else:
+            st.warning("该类别下没有可用样本。")
